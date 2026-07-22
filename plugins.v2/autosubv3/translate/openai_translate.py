@@ -60,6 +60,11 @@ class OpenAi:
                 ]
             else:
                 message = [{"role": "user", "content": message}]
+        # DeepSeek V4 系列（v4-pro/v4-flash）默认开启 thinking 推理，字幕逐行翻译用不上，
+        # 反而大幅拉长耗时、把 reasoning 计入 output 费用，还可能干扰批量 JSON 输出。
+        # 仅对 DeepSeek 官方端点显式关闭思考；其它厂商（OpenAI/Gemini/硅基流动等）不注入此参数，避免报错。
+        if self._api_url and "deepseek.com" in self._api_url and "extra_body" not in kwargs:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         return self.client.chat.completions.create(model=self._model, messages=message, **kwargs)
 
     @property
@@ -163,8 +168,10 @@ class OpenAi:
                     print(f"翻译请求失败 (已重试{max_retries}次)：{last_error}")
                     return False, f"{last_error}"
 
-    def translate_batch_to_zh(self, texts: List[str], max_retries: int = 3) -> Tuple[bool, List[Optional[str]]]:
-        """批量翻译：JSON结构化输出，按id校验，尽量避免串行"""
+    def translate_batch_to_zh(self, texts: List[str], max_retries: int = 3,
+                              context: str = None) -> Tuple[bool, List[Optional[str]]]:
+        """批量翻译：JSON结构化输出，按id校验，尽量避免串行。
+        context 为本批所在片段的上下文（含前后台词，[待译] 标记本批行），仅供模型理解剧情，不翻译。"""
         input_batch = []
         for idx, text in enumerate(texts, 1):
             input_batch.append({
@@ -172,9 +179,16 @@ class OpenAi:
                 "text": self._clean_text(text)
             })
 
+        context = self._clean_text(context) if context else None
+        context_block = (
+            f"\n【上下文场景】以下是本批字幕所在片段，标注 [待译] 的行即下面 JSON 中要翻译的内容，"
+            f"其余为前后台词，仅供你理解剧情、人物与语气，请勿翻译、也不要输出：\n{context}\n"
+            if context else ""
+        )
+
         prompt = f"""
 你是专业字幕翻译器。
-
+{context_block}
 规则：
 1. 不得改变 id
 2. 不得合并字幕
@@ -183,6 +197,7 @@ class OpenAi:
 5. 输出 JSON 数组
 6. 输出数量必须与输入一致
 7. 口语化，符合中文观影习惯
+8. 结合上下文场景，让人物称谓、专有名词、情感语气在前后文中保持连贯
 
 输入：
 {json.dumps(input_batch, ensure_ascii=False)}

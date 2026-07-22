@@ -242,7 +242,9 @@ class TranslationService:
 
             try:
                 batch_texts = [item.content.strip() for item in batch_list]
-                ret, translations = self._openai().translate_batch_to_zh(batch_texts)
+                # 批量模式也注入上下文：取本批前后各 context_window 行台词，让模型理解剧情、保持连贯
+                batch_context = self.get_context(valid_subs, indices, is_batch=True) if self._context_window() > 0 else None
+                ret, translations = self._openai().translate_batch_to_zh(batch_texts, context=batch_context)
                 self._raise_if_task_cancelled()
                 if ret and translations and all(t is not None for t in translations):
                     for item, trans in zip(batch_list, translations):
