@@ -1,4 +1,4 @@
-﻿import os
+import os
 import tempfile
 from datetime import datetime
 from typing import Tuple, Dict, Any, List, Optional
@@ -44,7 +44,7 @@ except Exception:
 
 class AutoSubv3(AutoSubv3CompatMixin, _PluginBase):
     # 插件名称
-    plugin_name = "AI字幕生成(联动版)"
+    plugin_name = "【自用】AI字幕生成(联动版)"
     # 插件描述
     plugin_desc = "自动生成字幕并翻译成中文，支持 faster-whisper 识别、字幕提取、大模型并发翻译，并可联动字幕匹配功能。"
     # 插件图标
