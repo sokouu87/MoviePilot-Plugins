@@ -181,8 +181,8 @@ class OpenAi:
 
         context = self._clean_text(context) if context else None
         context_block = (
-            f"\n【上下文场景】以下是本批字幕所在片段，标注 [待译] 的行即下面 JSON 中要翻译的内容，"
-            f"其余为前后台词，仅供你理解剧情、人物与语气，请勿翻译、也不要输出：\n{context}\n"
+            f"\n【前后台词】以下是本批字幕前后的相邻台词，仅供你理解剧情、人物与语气，"
+            f"请勿翻译、也不要输出，只翻译下面输入中的每一条：\n{context}\n"
             if context else ""
         )
 
@@ -197,7 +197,7 @@ class OpenAi:
 5. 输出 JSON 数组
 6. 输出数量必须与输入一致
 7. 口语化，符合中文观影习惯
-8. 结合上下文场景，让人物称谓、专有名词、情感语气在前后文中保持连贯
+8. 结合前后台词，让人物称谓、专有名词、情感语气在前后文中保持连贯
 
 输入：
 {json.dumps(input_batch, ensure_ascii=False)}

@@ -242,8 +242,15 @@ class TranslationService:
 
             try:
                 batch_texts = [item.content.strip() for item in batch_list]
-                # 批量模式也注入上下文：取本批前后各 context_window 行台词，让模型理解剧情、保持连贯
-                batch_context = self.get_context(valid_subs, indices, is_batch=True) if self._context_window() > 0 else None
+                # 批量模式注入上下文：仅取本批前后各 context_window 行台词（不含本批待译行，避免模型混淆输出条数），帮助理解剧情、保持连贯
+                cw = self._context_window()
+                if cw > 0:
+                    _s, _e = min(indices), max(indices)
+                    _ctx_subs = list(valid_subs[max(0, _s - cw):_s]) + list(valid_subs[_e + 1:_e + 1 + cw])
+                    _ctx_lines = [s.content.replace('\n', ' ').strip() for s in _ctx_subs]
+                    batch_context = "\n".join([l for l in _ctx_lines if l]) or None
+                else:
+                    batch_context = None
                 ret, translations = self._openai().translate_batch_to_zh(batch_texts, context=batch_context)
                 self._raise_if_task_cancelled()
                 if ret and translations and all(t is not None for t in translations):
