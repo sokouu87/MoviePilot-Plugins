@@ -221,6 +221,15 @@ class OpenAi:
                     top_p=1,
                     system_hint="你是专业字幕翻译引擎"
                 )
+                if not getattr(OpenAi, '_think_probe_done', False):
+                    OpenAi._think_probe_done = True
+                    try:
+                        _pmsg = completion.choices[0].message
+                        _prc = getattr(_pmsg, 'reasoning_content', None)
+                        from app.log import logger as _plog
+                        _plog.info(f"[思考检测] 模型={self._model} | 注入thinking禁用={'是' if (self._api_url and 'deepseek.com' in self._api_url) else '否'} | 响应reasoning_content={'有→思考未关闭!' if _prc else '无→思考已关闭'}")
+                    except Exception as _pe:
+                        print(f"[思考检测] 探针异常: {_pe}")
                 raw_text = completion.choices[0].message.content.strip()
                 usage_info = getattr(completion, 'usage', None)
                 usage_str = ""
