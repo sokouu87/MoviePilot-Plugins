@@ -62,9 +62,16 @@ class OpenAi:
                 message = [{"role": "user", "content": message}]
         # DeepSeek V4 系列（v4-pro/v4-flash）默认开启 thinking 推理，字幕逐行翻译用不上，
         # 反而大幅拉长耗时、把 reasoning 计入 output 费用，还可能干扰批量 JSON 输出。
-        # 仅对 DeepSeek 官方端点显式关闭思考；其它厂商（OpenAI/Gemini/硅基流动等）不注入此参数，避免报错。
+        # 仅对 DeepSeek 官方端点显式关闭思考；其它厂商（Gemini/硅基流动等）不注入此参数，避免报错。
         if self._api_url and "deepseek.com" in self._api_url and "extra_body" not in kwargs:
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        # GPT-5.x（Luna/Terra/Sol）是推理模型，默认 reasoning_effort=medium，会拖慢并干扰批量 JSON。
+        # 按模型名判断（兼容中转域名）；官方关思考的值是 "none"。同时移除 temperature/top_p——
+        # GPT-5.x 对这两个参数可能返回 400，去掉最稳（翻译走确定性默认即可）。
+        elif str(self._model or "").lower().startswith("gpt-5"):
+            kwargs.setdefault("reasoning_effort", "none")
+            kwargs.pop("temperature", None)
+            kwargs.pop("top_p", None)
         return self.client.chat.completions.create(model=self._model, messages=message, **kwargs)
 
     @property
