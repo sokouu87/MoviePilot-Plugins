@@ -301,6 +301,13 @@ class OpenAi:
 
             except Exception as e:
                 last_error = str(e)
+                if not getattr(OpenAi, '_err_probe_done', False):
+                    OpenAi._err_probe_done = True
+                    try:
+                        from app.log import logger as _elog
+                        _elog.warning(f"[翻译错误探针] 模型={self._model} 批量调用首次异常: {str(last_error)[:600]}")
+                    except Exception:
+                        pass
                 if attempt < max_retries:
                     sleep_time = (2 ** attempt) + random.uniform(0.1, 0.9)
                     print(f"[BatchTranslate] 失败 attempt={attempt+1}: {last_error}，重试...")
