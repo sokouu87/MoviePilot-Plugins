@@ -66,9 +66,9 @@ class OpenAi:
         if self._api_url and "deepseek.com" in self._api_url and "extra_body" not in kwargs:
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         # GPT-5.x（Luna/Terra/Sol）是推理模型，默认 reasoning_effort=medium，会拖慢并干扰批量 JSON。
-        # 按模型名判断（兼容中转域名）；官方关思考的值是 "none"。同时移除 temperature/top_p——
-        # GPT-5.x 对这两个参数可能返回 400，去掉最稳（翻译走确定性默认即可）。
-        elif str(self._model or "").lower().startswith("gpt-5"):
+        # 用 "in" 匹配（兼容 OpenRouter 的 openai/gpt-5.6-luna 这种带前缀命名）；官方关思考值是 "none"。
+        # 同时移除 temperature/top_p——GPT-5.x 对这两个参数可能返回 400，去掉最稳。
+        elif "gpt-5" in str(self._model or "").lower():
             kwargs.setdefault("reasoning_effort", "none")
             kwargs.pop("temperature", None)
             kwargs.pop("top_p", None)
