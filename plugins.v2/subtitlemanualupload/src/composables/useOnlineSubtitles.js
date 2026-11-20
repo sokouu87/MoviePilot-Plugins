@@ -18,7 +18,18 @@ const ONLINE_DOWNLOAD_TIMEOUT_MS = 35000
 
 function subhdVerification(error, results) {
   const body = error?.response?.data ?? error?.data ?? error
-  const detail = body?.detail ?? body
+  let detail = body?.detail ?? body
+  if (detail?.code !== 'subtitle_verification_required' && typeof detail !== 'string') {
+    detail = detail?.message ?? error?.message
+  }
+  if (typeof detail === 'string') {
+    // MoviePilot's web client can expose the 409 detail as a JSON string.
+    try {
+      detail = JSON.parse(detail)
+    } catch {
+      return null
+    }
+  }
   if (detail?.code !== 'subtitle_verification_required' || detail.provider !== 'subhd') return null
   const result = results.find(item => item.provider === 'subhd' && item.result_id === detail.result_id)
   if (!result || !detail.page_url) return null

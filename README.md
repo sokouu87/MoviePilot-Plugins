@@ -17,8 +17,8 @@
 
 | 插件 | 目录 | 版本 | 主要功能 |
 | --- | --- | --- | --- |
-| 海拉鲁字幕大师 | `plugins.v2/subtitlemanualupload` | 0.1.103 | MoviePilot V2，支持 MPLite 接续 SubHD 人工核验 |
-| 海拉鲁字幕大师 | `plugins.v3/subtitlemanualupload` | 1.2.21 | MoviePilot V3，支持 MPLite 接续 SubHD 人工核验 |
+| 海拉鲁字幕大师 | `plugins.v2/subtitlemanualupload` | 0.1.104 | MoviePilot V2，支持 MPLite 接续 SubHD 人工核验 |
+| 海拉鲁字幕大师 | `plugins.v3/subtitlemanualupload` | 1.2.22 | MoviePilot V3，支持 MPLite 接续 SubHD 人工核验 |
 | AI字幕生成(联动版) | `plugins.v2/autosubv3` | 3.5.54 | 音轨识别、字幕提取、AI 翻译、任务队列、联动字幕匹配 |
 | Emby媒体库封面生成 | `plugins.v2/mediacovergenerator` | 0.9.10 | 生成 Emby/Jellyfin 媒体库静态或动态封面 |
 
