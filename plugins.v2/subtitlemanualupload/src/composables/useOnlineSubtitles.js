@@ -2,7 +2,9 @@ import { computed, nextTick, ref } from 'vue'
 import {
   isForeignOnlineResult,
   isOnlineResultDownloadable,
+  onlineLanguageItems,
   onlineProviderItems,
+  defaultOnlineProviderIds,
   onlineResultIdentityPriority,
   onlineResultKey,
   onlineResultLanguageFilterCategory,
@@ -52,7 +54,7 @@ export function useOnlineSubtitles({
   const onlineKeyword = ref('')
   const onlineTargets = ref([])
   const onlineStatus = ref({ providers: [], capabilities: {} })
-  const onlineSelectedProviders = ref(['assrt', 'opensubtitles'])
+  const onlineSelectedProviders = ref([...defaultOnlineProviderIds])
   const onlineResults = ref([])
   const onlineLanguageFilter = ref('all')
   const onlineProviderFilter = ref('all')
@@ -65,38 +67,30 @@ export function useOnlineSubtitles({
   let onlineDownloadSeq = 0
 
   const hasOnlineResults = computed(() => onlineResults.value.length > 0)
-  const filteredOnlineResults = computed(() => {
-    return onlineResults.value.filter(item => {
-      const languageMatched = onlineLanguageFilter.value === 'all' || onlineResultLanguageFilterCategory(item) === onlineLanguageFilter.value
-      const providerMatched = onlineProviderFilter.value === 'all' || item.provider === onlineProviderFilter.value
-      return languageMatched && providerMatched
-    })
-  })
+  const matchesLanguage = item => onlineLanguageFilter.value === 'all' || onlineResultLanguageFilterCategory(item) === onlineLanguageFilter.value
+  const matchesProvider = item => onlineProviderFilter.value === 'all' || item.provider === onlineProviderFilter.value
+  const filteredOnlineResults = computed(() => onlineResults.value.filter(item => matchesLanguage(item) && matchesProvider(item)))
   const onlineLanguageFilterItems = computed(() => {
-    const languageItems = [
-      { title: '中文', value: 'chinese' },
-      { title: '英文', value: 'english' },
-      { title: '日文', value: 'japanese' },
-      { title: '其他', value: 'other' },
-    ]
-    const counts = onlineResults.value.reduce((acc, item) => {
+    const results = onlineResults.value.filter(matchesProvider)
+    const counts = results.reduce((acc, item) => {
       const category = onlineResultLanguageFilterCategory(item)
       acc[category] = (acc[category] || 0) + 1
       return acc
     }, {})
     return [
-      { title: `全部 ${onlineResults.value.length}`, value: 'all' },
-      ...languageItems.map(item => ({ title: `${item.title} ${counts[item.value] || 0}`, value: item.value })),
+      { title: `全部 ${results.length}`, value: 'all' },
+      ...onlineLanguageItems.map(item => ({ title: `${item.title} ${counts[item.value] || 0}`, value: item.value })),
     ]
   })
   const onlineProviderFilterItems = computed(() => {
-    const counts = onlineResults.value.reduce((acc, item) => {
+    const results = onlineResults.value.filter(matchesLanguage)
+    const counts = results.reduce((acc, item) => {
       const provider = item.provider || 'unknown'
       acc[provider] = (acc[provider] || 0) + 1
       return acc
     }, {})
     return [
-      { title: `全部 ${onlineResults.value.length}`, value: 'all' },
+      { title: `全部 ${results.length}`, value: 'all' },
       ...onlineProviderItems.map(item => ({ title: `${item.title} ${counts[item.value] || 0}`, value: item.value })),
     ]
   })
@@ -138,12 +132,9 @@ export function useOnlineSubtitles({
     return selectedSeason.value === 'all' ? '搜索全部季字幕包' : '搜索本季字幕包'
   })
 
-  function ensureConfiguredApiProvidersSelected() {
-    const configured = [...(onlineStatus.value?.enabled_providers || [])]
+  function syncConfiguredProviders() {
+    const configured = (onlineStatus.value?.enabled_providers || [])
       .filter(provider => onlineProviderItems.some(item => item.value === provider))
-    if (onlineStatus.value?.assrt_api_configured) configured.push('assrt')
-    if (onlineStatus.value?.opensubtitles_api_configured) configured.push('opensubtitles')
-    if (!configured.length) return
     onlineSelectedProviders.value = Array.from(new Set(configured))
   }
 
@@ -151,11 +142,7 @@ export function useOnlineSubtitles({
     try {
       const response = await pluginApi.value.onlineStatus()
       onlineStatus.value = unwrapResponse(response) || onlineStatus.value
-      const enabled = onlineStatus.value.enabled_providers || []
-      if (enabled.length) {
-        onlineSelectedProviders.value = enabled
-      }
-      ensureConfiguredApiProvidersSelected()
+      syncConfiguredProviders()
     } catch (err) {
       onlineError.value = errorMessage(err, '加载在线字幕源状态失败')
     }
@@ -452,7 +439,7 @@ export function useOnlineSubtitles({
           results: selectedOnlineResults.value,
         }),
         ONLINE_DOWNLOAD_TIMEOUT_MS,
-        '在线字幕下载仍在源站验证中，已停止等待；可换一个结果重试，或打开手动链接下载后上传。',
+        '在线字幕源响应超时，已停止等待；可换一个结果重试，或打开手动链接下载后上传。',
       )
       if (downloadSeq !== onlineDownloadSeq) return
       const data = unwrapResponse(response) || {}
@@ -512,7 +499,7 @@ export function useOnlineSubtitles({
     onlineProviderProgressItems,
     onlineAiConfirmText,
     onlineBatchLabel,
-    ensureConfiguredApiProvidersSelected,
+    syncConfiguredProviders,
     loadOnlineStatus,
     openOnlineDialog,
     openBatchOnlineSearch,

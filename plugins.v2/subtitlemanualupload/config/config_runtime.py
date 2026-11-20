@@ -14,6 +14,8 @@ RUNTIME_CONFIG_FIELDS = (
     ("_online_engine", "online_engine"),
     ("_online_use_proxy", "online_use_proxy"),
     ("_online_site_urls", "online_site_urls"),
+    ("_subdl_api_key", "subdl_api_key"),
+    ("_subtitlecat_include_translations", "subtitlecat_include_translations"),
     ("_assrt_api_key", "assrt_api_key"),
     ("_assrt_api_url", "assrt_api_url"),
     ("_opensubtitles_api_key", "opensubtitles_api_key"),
@@ -22,12 +24,17 @@ RUNTIME_CONFIG_FIELDS = (
     ("_opensubtitles_password", "opensubtitles_password"),
     ("_ai_link_enabled", "ai_link_enabled"),
     ("_traditional_to_simplified", "traditional_to_simplified"),
+    ("_emby_refresh_after_subtitle_write", "emby_refresh_after_subtitle_write"),
     ("_auto_search_on_transfer", "auto_search_on_transfer"),
     ("_auto_skip_chinese_media_on_transfer", "auto_skip_chinese_media_on_transfer"),
     ("_auto_transfer_subtitle_strategy", "auto_transfer_subtitle_strategy"),
     ("_trust_transfer_history_paths", "trust_transfer_history_paths"),
+    ("_manual_strm_enabled", "manual_strm_enabled"),
+    ("_manual_strm_paths", "manual_strm_paths"),
+    ("_auto_search_on_manual_strm", "auto_search_on_manual_strm"),
     ("_auto_multi_subtitle_mode", "auto_multi_subtitle_mode"),
     ("_auto_subtitle_language_priority", "auto_subtitle_language_priority"),
+    ("_auto_subtitle_language_strict", "auto_subtitle_language_strict"),
     ("_auto_subtitle_format_priority", "auto_subtitle_format_priority"),
     ("_auto_ass_to_srt_for_ai", "auto_ass_to_srt_for_ai"),
     ("_timeline_max_offset_seconds", "timeline_max_offset_seconds"),
@@ -40,12 +47,17 @@ CLASS_RUNTIME_CONFIG_FIELDS = (
     "_rar_dependency_mode",
     "_rar_tool_path",
     "_traditional_to_simplified",
+    "_emby_refresh_after_subtitle_write",
     "_auto_search_on_transfer",
     "_auto_skip_chinese_media_on_transfer",
     "_auto_transfer_subtitle_strategy",
     "_trust_transfer_history_paths",
+    "_manual_strm_enabled",
+    "_manual_strm_paths",
+    "_auto_search_on_manual_strm",
     "_auto_multi_subtitle_mode",
     "_auto_subtitle_language_priority",
+    "_auto_subtitle_language_strict",
     "_auto_subtitle_format_priority",
     "_auto_ass_to_srt_for_ai",
     "_timeline_max_offset_seconds",
@@ -66,9 +78,16 @@ def sync_class_runtime_config(owner_cls: type, owner: Any) -> None:
 
 
 def reset_runtime_state(owner: Any) -> None:
+    previous_monitor = getattr(owner, "_manual_strm_monitor", None)
+    if previous_monitor is not None:
+        previous_monitor.stop()
+    owner._manual_strm_monitor = None
     owner._entry_map = OrderedDict()
     owner._media_index_cache = OrderedDict()
+    owner._subtitle_directory_cache = OrderedDict()
+    owner._match_history_directory_cache = {}
     owner._match_history_cache = {
+        "version": 3,
         "loaded_at": None,
         "validated_at": None,
         "signature": "",
@@ -104,10 +123,14 @@ def build_save_config_payload(owner: Any) -> dict[str, Any]:
         "rar_dependency_mode": owner._rar_dependency_mode,
         "rar_tool_path": owner._rar_tool_path,
         "traditional_to_simplified": owner._traditional_to_simplified,
+        "emby_refresh_after_subtitle_write": owner._emby_refresh_after_subtitle_write,
         "auto_search_on_transfer": owner._auto_search_on_transfer,
         "auto_skip_chinese_media_on_transfer": owner._auto_skip_chinese_media_on_transfer,
         "auto_transfer_subtitle_strategy": owner._auto_transfer_subtitle_strategy,
         "trust_transfer_history_paths": owner._trust_transfer_history_paths,
+        "manual_strm_enabled": owner._manual_strm_enabled,
+        "manual_strm_paths": owner._manual_strm_paths,
+        "auto_search_on_manual_strm": owner._auto_search_on_manual_strm,
         "timeline_max_offset_seconds": owner._timeline_max_offset_seconds,
         "timeline_min_offset_seconds": owner._timeline_min_offset_seconds,
         "timeline_vad_mode": owner._timeline_vad_mode,
@@ -118,7 +141,8 @@ def build_save_config_payload(owner: Any) -> dict[str, Any]:
         "online_proxy_migrated": True,
         "assrt_provider_migrated": True,
         "subhd_url": owner._online_site_urls["subhd"],
-        "zimuku_url": owner._online_site_urls["zimuku"],
+        "subdl_api_key": owner._subdl_api_key,
+        "subtitlecat_include_translations": owner._subtitlecat_include_translations,
         "assrt_url": owner._online_site_urls["assrt"],
         "assrt_api_key": owner._assrt_api_key,
         "assrt_api_url": owner._assrt_api_url,
@@ -130,6 +154,7 @@ def build_save_config_payload(owner: Any) -> dict[str, Any]:
         "ai_link_enabled": owner._ai_link_enabled,
         "auto_multi_subtitle_mode": owner._auto_multi_subtitle_mode,
         "auto_subtitle_language_priority": list(owner._auto_subtitle_language_priority),
+        "auto_subtitle_language_strict": owner._auto_subtitle_language_strict,
         "auto_subtitle_format_priority": list(owner._auto_subtitle_format_priority),
         "auto_ass_to_srt_for_ai": owner._auto_ass_to_srt_for_ai,
     }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import http.cookiejar
 import json
 import re
@@ -14,7 +15,7 @@ from urllib.parse import unquote, urlparse, urlunparse
 from app.core.config import settings
 from app.log import logger
 
-from .models import CaptchaRequiredError
+from .models import CaptchaRequiredError, HumanVerificationRequiredError
 
 
 USER_AGENT = (
@@ -24,6 +25,19 @@ USER_AGENT = (
 DEFAULT_ENGINE = "cloakbrowser"
 MP_BROWSER_ENGINE = "mp_browser"
 ONLINE_ENGINES = {DEFAULT_ENGINE, MP_BROWSER_ENGINE}
+ONLINE_PAGE_TIMEOUT_SECONDS = 10
+
+
+def _check_cloudflare_challenge(headers: Any) -> None:
+    if headers and headers.get("cf-mitigated", "").strip().lower() == "challenge":
+        raise HumanVerificationRequiredError("字幕站点需要人机核验")
+
+
+def _is_subhd_verification_notice(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = html.unescape(re.sub(r"<[^>]+>", "", value))
+    return bool(re.search(r"先完成\s*(?:人机核验|人机验证|人工验证)\s*[,，。]?\s*(?:后(?:再)?|再)\s*下载", text))
 
 
 def normalize_online_engine(value: Any) -> str:
@@ -82,10 +96,12 @@ class OnlinePageClient:
         request = urllib.request.Request(url, headers=headers)
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
+                _check_cloudflare_challenge(response.headers)
                 raw = response.read()
                 charset = response.headers.get_content_charset()
                 return response.status, _decode_bytes(raw, charset), response.geturl()
         except urllib.error.HTTPError as exc:
+            _check_cloudflare_challenge(exc.headers)
             detail = _decode_bytes(exc.read()[:500], exc.headers.get_content_charset())
             return exc.code, detail, url
         except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
@@ -104,6 +120,7 @@ class OnlinePageClient:
         for attempt in range(3):
             try:
                 with self.opener.open(request, timeout=self.timeout) as response:
+                    _check_cloudflare_challenge(response.headers)
                     content = response.read()
                     filename = OnlineDirectDownloader._filename_from_response(response.headers, response.geturl() or url)
                     logger.info(
@@ -116,7 +133,10 @@ class OnlinePageClient:
                     )
                     return filename, content, response.geturl()
             except urllib.error.HTTPError as exc:
+                _check_cloudflare_challenge(exc.headers)
                 detail = _decode_bytes(exc.read()[:300], exc.headers.get_content_charset())
+                if _is_subhd_verification_notice(detail):
+                    raise HumanVerificationRequiredError("字幕站点需要人机核验") from exc
                 raise ValueError(f"下载失败 HTTP {exc.code}: {detail}") from exc
             except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
                 last_error = exc
@@ -141,15 +161,22 @@ class OnlinePageClient:
         request = urllib.request.Request(url, data=data, headers=headers, method="POST")
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
+                _check_cloudflare_challenge(response.headers)
                 raw = response.read()
         except urllib.error.HTTPError as exc:
+            _check_cloudflare_challenge(exc.headers)
             detail = _decode_bytes(exc.read()[:500], exc.headers.get_content_charset())
+            if _is_subhd_verification_notice(detail):
+                raise HumanVerificationRequiredError("字幕站点需要人机核验") from exc
             raise ValueError(f"请求失败 HTTP {exc.code}: {_compact_error_message(detail)}") from exc
         except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
             raise ValueError(_format_network_error(url, exc)) from exc
+        text = _decode_bytes(raw, None)
         try:
-            payload = json.loads(_decode_bytes(raw, None) or "{}")
+            payload = json.loads(text or "{}")
         except Exception as exc:
+            if _is_subhd_verification_notice(text):
+                raise HumanVerificationRequiredError("字幕站点需要人机核验") from exc
             raise ValueError("接口返回内容不是 JSON") from exc
         return payload if isinstance(payload, dict) else {}
 
@@ -164,8 +191,16 @@ class OnlinePageClient:
 
 
 class OnlineDirectDownloader:
-    def __init__(self, *, use_proxy: bool = False, cookies: str = "", timeout: int = 40):
-        self.timeout = timeout
+    def __init__(
+        self,
+        *,
+        use_proxy: bool = False,
+        cookies: str = "",
+        timeout: int = 40,
+        attempts: int = 3,
+    ):
+        self.timeout = max(1, int(timeout))
+        self.attempts = max(1, int(attempts))
         self.cookies = cookies
         handlers = []
         proxies = getattr(settings, "PROXY", None) if use_proxy else None
@@ -185,7 +220,7 @@ class OnlineDirectDownloader:
             headers["Cookie"] = self.cookies
         request = urllib.request.Request(url, headers=headers)
         last_error: Optional[Exception] = None
-        for attempt in range(3):
+        for attempt in range(self.attempts):
             try:
                 with self.opener.open(request, timeout=self.timeout) as response:
                     content = response.read()
@@ -204,7 +239,7 @@ class OnlineDirectDownloader:
                 raise ValueError(f"下载失败 HTTP {exc.code}: {detail}") from exc
             except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
                 last_error = exc
-                if attempt < 2 and _is_retryable_network_error(exc):
+                if attempt < self.attempts - 1 and _is_retryable_network_error(exc):
                     time.sleep(0.5 * (2**attempt))
                     continue
                 break
@@ -308,7 +343,7 @@ def _decode_bytes(raw: bytes, charset: Optional[str]) -> str:
 
 
 def _looks_like_html_content(content: bytes, filename: str = "") -> bool:
-    if Path(filename or "").suffix.lower() in {".zip", ".rar", ".7z", ".srt", ".ass", ".ssa", ".vtt", ".sub"}:
+    if Path(filename or "").suffix.lower() in {".zip", ".rar", ".7z", ".srt", ".ass", ".ssa", ".vtt", ".sub", ".sup", ".idx", ".smi", ".sami", ".ttml", ".dfxp"}:
         return False
     head = _decode_bytes((content or b"")[:500], None).lstrip().lower()
     return head.startswith("<!doctype html") or head.startswith("<html") or "<body" in head

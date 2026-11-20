@@ -1,28 +1,39 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import '../styles/theme.css'
+import { onlineProviderItems, defaultOnlineProviderIds } from '../utils/onlineResult'
 
 const props = defineProps({
   initialConfig: {
     type: Object,
     default: () => ({}),
   },
+  saving: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['save', 'close'])
 const configError = ref('')
+const draggingAutoLanguage = ref('')
+const dropTargetAutoLanguage = ref('')
+const manualStrmPathPlaceholder = `/vol2/1000/raid/2/links2
+/vol1/1000/media-strm`
 const localConfig = ref({
   enabled: false,
   show_sidebar_nav: true,
-  online_providers: ['assrt', 'opensubtitles'],
+  online_providers: [...defaultOnlineProviderIds],
   online_use_proxy: false,
   traditional_to_simplified: false,
+  emby_refresh_after_subtitle_write: false,
   auto_search_on_transfer: false,
   auto_skip_chinese_media_on_transfer: true,
   auto_transfer_subtitle_strategy: 'online_then_ai_source',
   trust_transfer_history_paths: false,
+  manual_strm_enabled: false,
+  manual_strm_paths: '',
+  auto_search_on_manual_strm: false,
   auto_multi_subtitle_mode: 'best',
-  auto_subtitle_language_priority: ['bilingual', 'chi', 'cht', 'eng'],
+  auto_subtitle_language_priority: ['chi&eng', 'chi&jp', 'chi&kr', 'other_bilingual', 'chi', 'cht', 'eng'],
+  auto_subtitle_language_strict: false,
   auto_subtitle_format_priority: ['.ass', '.srt', '.ssa', '.vtt'],
   auto_ass_to_srt_for_ai: true,
   timeline_max_offset_seconds: 120,
@@ -30,7 +41,8 @@ const localConfig = ref({
   timeline_vad_mode: 'webrtc',
   timeline_allow_risky_offset: false,
   subhd_url: 'https://subhd.tv',
-  zimuku_url: 'https://zmk.pw',
+  subdl_api_key: '',
+  subtitlecat_include_translations: false,
   assrt_url: 'https://2.assrt.net',
   assrt_api_key: '',
   assrt_api_url: 'https://api.assrt.net',
@@ -44,12 +56,6 @@ const localConfig = ref({
   rar_tool_path: '/usr/bin/unar',
 })
 
-const onlineProviderItems = [
-  { title: 'SubHD 中文字幕', value: 'subhd' },
-  { title: 'Zimuku 中文字幕', value: 'zimuku' },
-  { title: '射手网(伪，需 API Key)', value: 'assrt' },
-  { title: 'OpenSubtitles 多语言字幕', value: 'opensubtitles' },
-]
 
 const rarDependencyModes = [
   { title: '不处理，仅检测', value: 'none' },
@@ -70,13 +76,17 @@ const autoMultiSubtitleModes = [
 ]
 
 const autoLanguageItems = [
-  { title: '双语', value: 'bilingual' },
+  { title: '中英双语', value: 'chi&eng' },
+  { title: '中日双语', value: 'chi&jp' },
+  { title: '中韩双语', value: 'chi&kr' },
+  { title: '其他中外双语', value: 'other_bilingual' },
   { title: '简中', value: 'chi' },
   { title: '繁中', value: 'cht' },
   { title: '英文', value: 'eng' },
   { title: '日文', value: 'jpn' },
   { title: '韩文', value: 'kor' },
 ]
+const defaultAutoLanguages = ['chi&eng', 'chi&jp', 'chi&kr', 'other_bilingual', 'chi', 'cht', 'eng']
 
 const autoFormatItems = [
   { title: 'ASS', value: '.ass' },
@@ -86,6 +96,12 @@ const autoFormatItems = [
   { title: 'WebVTT', value: '.webvtt' },
   { title: 'SBV', value: '.sbv' },
   { title: 'SUB', value: '.sub' },
+  { title: 'SUP', value: '.sup' },
+  { title: 'VobSub (IDX)', value: '.idx' },
+  { title: 'SMI', value: '.smi' },
+  { title: 'SAMI', value: '.sami' },
+  { title: 'TTML', value: '.ttml' },
+  { title: 'DFXP', value: '.dfxp' },
 ]
 
 const timelineVadItems = [
@@ -94,9 +110,9 @@ const timelineVadItems = [
 ]
 
 function normalizeProviders(value) {
-  const allowed = ['subhd', 'zimuku', 'assrt', 'opensubtitles']
+  const allowed = onlineProviderItems.map(item => item.value)
   const providers = Array.isArray(value) ? value.filter(item => allowed.includes(item)) : []
-  return providers.length ? Array.from(new Set(providers)) : ['assrt', 'opensubtitles']
+  return Array.isArray(value) ? Array.from(new Set(providers)) : [...defaultOnlineProviderIds]
 }
 
 function normalizeRootUrl(value, fallback) {
@@ -104,10 +120,6 @@ function normalizeRootUrl(value, fallback) {
   return /^https?:\/\//i.test(text) ? text : fallback
 }
 
-function normalizeZimukuRootUrl(value) {
-  const normalized = normalizeRootUrl(value, 'https://zmk.pw')
-  return normalized === 'https://zimuku.org' ? 'https://zmk.pw' : normalized
-}
 
 function normalizePositiveNumber(value, fallback) {
   const number = Number(value)
@@ -142,6 +154,64 @@ function normalizeList(value, allowed, fallback) {
   return result
 }
 
+function normalizeLanguages(value) {
+  if (value == null) return [...defaultAutoLanguages]
+  const allowed = autoLanguageItems.map(item => item.value)
+  const raw = Array.isArray(value) ? value : String(value).split(/[\s,，/|]+/)
+  const result = []
+  raw.forEach(item => {
+    const key = String(item || '').trim().toLowerCase()
+    const expanded = ['bilingual', '双语'].includes(key) ? defaultAutoLanguages.slice(0, 4) : [key === 'cht&eng' ? 'chi&eng' : key]
+    expanded.forEach(language => {
+      if (allowed.includes(language) && !result.includes(language)) result.push(language)
+    })
+  })
+  return result
+}
+
+function autoLanguageTitle(value) {
+  return autoLanguageItems.find(item => item.value === value)?.title || value
+}
+
+function setAutoLanguageRank(language, value) {
+  const priority = [...localConfig.value.auto_subtitle_language_priority]
+  const currentIndex = priority.indexOf(language)
+  const rank = Number(value)
+  if (!Number.isInteger(rank) || rank < 1 || rank > priority.length || currentIndex < 0) return
+
+  priority.splice(currentIndex, 1)
+  priority.splice(rank - 1, 0, language)
+  localConfig.value.auto_subtitle_language_priority = priority
+}
+
+function moveAutoLanguage(source, target) {
+  const priority = [...localConfig.value.auto_subtitle_language_priority]
+  const sourceIndex = priority.indexOf(source)
+  const targetIndex = priority.indexOf(target)
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return
+
+  const [language] = priority.splice(sourceIndex, 1)
+  priority.splice(targetIndex, 0, language)
+  localConfig.value.auto_subtitle_language_priority = priority
+}
+
+function startDraggingAutoLanguage(language, event) {
+  draggingAutoLanguage.value = language
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', language)
+}
+
+function finishDraggingAutoLanguage() {
+  draggingAutoLanguage.value = ''
+  dropTargetAutoLanguage.value = ''
+}
+
+function dropAutoLanguage(language, event) {
+  event.preventDefault()
+  moveAutoLanguage(draggingAutoLanguage.value || event.dataTransfer.getData('text/plain'), language)
+  finishDraggingAutoLanguage()
+}
+
 function normalizeConfig(input) {
   const assrtApiKey = String(input?.assrt_api_key || '').trim()
   const opensubtitlesApiKey = String(input?.opensubtitles_api_key || '').trim()
@@ -149,12 +219,6 @@ function normalizeConfig(input) {
   const opensubtitlesPassword = String(input?.opensubtitles_password || '').trim()
   const providers = normalizeProviders(input?.online_providers)
   const autoStrategy = normalizeAutoStrategy(input?.auto_transfer_subtitle_strategy)
-  if (assrtApiKey && !providers.includes('assrt')) {
-    providers.push('assrt')
-  }
-  if (opensubtitlesApiKey && !providers.includes('opensubtitles')) {
-    providers.push('opensubtitles')
-  }
   return {
     enabled: Boolean(input?.enabled),
     show_sidebar_nav: input?.show_sidebar_nav !== false,
@@ -162,18 +226,21 @@ function normalizeConfig(input) {
     online_use_proxy: Boolean(input?.online_use_proxy),
     online_proxy_migrated: true,
     traditional_to_simplified: Boolean(input?.traditional_to_simplified),
+    emby_refresh_after_subtitle_write: Boolean(input?.emby_refresh_after_subtitle_write),
     auto_search_on_transfer: Boolean(input?.auto_search_on_transfer),
     auto_skip_chinese_media_on_transfer: input?.auto_skip_chinese_media_on_transfer !== false,
     auto_transfer_subtitle_strategy: autoStrategy,
     trust_transfer_history_paths: Boolean(input?.trust_transfer_history_paths),
+    manual_strm_enabled: Boolean(input?.manual_strm_enabled),
+    manual_strm_paths: Array.isArray(input?.manual_strm_paths)
+      ? input.manual_strm_paths.join('\n')
+      : String(input?.manual_strm_paths || ''),
+    auto_search_on_manual_strm: Boolean(input?.auto_search_on_manual_strm),
     auto_multi_subtitle_mode: autoMultiSubtitleModes.some(item => item.value === input?.auto_multi_subtitle_mode)
       ? input.auto_multi_subtitle_mode
       : 'best',
-    auto_subtitle_language_priority: normalizeList(
-      input?.auto_subtitle_language_priority,
-      autoLanguageItems.map(item => item.value),
-      ['bilingual', 'chi', 'cht', 'eng'],
-    ),
+    auto_subtitle_language_priority: normalizeLanguages(input?.auto_subtitle_language_priority),
+    auto_subtitle_language_strict: Boolean(input?.auto_subtitle_language_strict),
     auto_subtitle_format_priority: normalizeList(
       input?.auto_subtitle_format_priority,
       autoFormatItems.map(item => item.value),
@@ -185,7 +252,8 @@ function normalizeConfig(input) {
     timeline_vad_mode: timelineVadItems.some(item => item.value === input?.timeline_vad_mode) ? input.timeline_vad_mode : 'webrtc',
     timeline_allow_risky_offset: Boolean(input?.timeline_allow_risky_offset),
     subhd_url: normalizeRootUrl(input?.subhd_url, 'https://subhd.tv'),
-    zimuku_url: normalizeZimukuRootUrl(input?.zimuku_url),
+    subdl_api_key: String(input?.subdl_api_key || '').trim(),
+    subtitlecat_include_translations: Boolean(input?.subtitlecat_include_translations),
     assrt_url: normalizeRootUrl(input?.assrt_url, 'https://2.assrt.net'),
     assrt_api_key: assrtApiKey,
     assrt_api_url: normalizeRootUrl(input?.assrt_api_url, 'https://api.assrt.net'),
@@ -204,6 +272,10 @@ function normalizeConfig(input) {
 
 function saveConfig() {
   const normalized = normalizeConfig(localConfig.value)
+  if (normalized.auto_subtitle_language_strict && !normalized.auto_subtitle_language_priority.length) {
+    configError.value = '仅接受所选语言时，请至少选择一种语言。'
+    return
+  }
   if (normalized.opensubtitles_username.includes('@')) {
     configError.value = '请输入用户名而非邮箱！'
     return
@@ -219,13 +291,26 @@ onMounted(() => {
 
 <template>
   <div class="subtitlemanualupload-config">
-    <VToolbar density="comfortable" color="transparent">
-      <div class="text-h6 ms-3">海拉鲁字幕大师配置</div>
-      <VSpacer />
-      <VBtn icon="mdi-content-save" variant="text" color="primary" @click="saveConfig" />
-      <VBtn icon="mdi-close" variant="text" @click="emit('close')" />
-    </VToolbar>
-    <VDivider />
+    <div class="config-toolbar-sticky">
+      <VToolbar density="comfortable" color="transparent">
+        <div class="text-subtitle-1 ms-3 config-toolbar-title" title="海拉鲁字幕大师配置">海拉鲁字幕大师配置</div>
+        <VSpacer />
+        <VBtn
+          href="https://github.com/ifsherlock/MoviePilot-Plugins/blob/main/docs/SubtitleManualUpload%E5%8A%9F%E8%83%BD%E4%BD%BF%E7%94%A8%E6%95%99%E5%AD%A6.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          prepend-icon="mdi-book-open-page-variant"
+          variant="text"
+          color="primary"
+          class="me-2"
+        >
+          使用教程
+        </VBtn>
+        <VBtn icon="mdi-content-save" variant="text" color="primary" :loading="props.saving" aria-label="保存配置" @click="saveConfig" />
+        <VBtn icon="mdi-close" variant="text" :disabled="props.saving" aria-label="关闭配置" @click="emit('close')" />
+      </VToolbar>
+      <VDivider />
+    </div>
 
     <div class="config-shell">
       <VCard rounded="xl" elevation="0" class="config-card">
@@ -267,6 +352,13 @@ onMounted(() => {
               hide-details
             />
             <VSwitch
+              v-model="localConfig.emby_refresh_after_subtitle_write"
+              label="写入后扫描 Emby 外挂字幕"
+              color="info"
+              hint="优先启动神医助手外挂字幕扫描任务；未找到任务时触发 Emby 全库刷新。"
+              persistent-hint
+            />
+            <VSwitch
               v-model="localConfig.auto_search_on_transfer"
               label="入库后自动搜索匹配字幕"
               color="info"
@@ -283,6 +375,34 @@ onMounted(() => {
               label="信任整理历史路径"
               color="warning"
               hint="CD2、网盘挂载、SMB 等慢路径可开启，刷新资源清单时不逐条访问文件。"
+              persistent-hint
+            />
+            <VSwitch
+              v-model="localConfig.manual_strm_enabled"
+              label="监控额外 STRM 目录"
+              color="info"
+              hint="开启后展开目录配置，并实时监控 .strm、NFO 和同目录字幕变化。"
+              persistent-hint
+            />
+            <VTextarea
+              v-if="localConfig.manual_strm_enabled"
+              v-model="localConfig.manual_strm_paths"
+              label="额外 STRM 本地目录"
+              :placeholder="manualStrmPathPlaceholder"
+              rows="3"
+              auto-grow
+              hint="每行一个 MoviePilot 容器内可见的绝对路径；不读取 .strm 内容。"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+              class="config-grid-wide"
+            />
+            <VSwitch
+              v-if="localConfig.manual_strm_enabled"
+              v-model="localConfig.auto_search_on_manual_strm"
+              label="额外 STRM 实时变化后自动搜索字幕"
+              color="success"
+              hint="只处理新增或变更的 STRM，已处理且未变化的文件不会重复搜索。"
               persistent-hint
             />
             <VSelect
@@ -309,7 +429,58 @@ onMounted(() => {
               density="comfortable"
               multiple
               chips
-              hint="默认：双语、简中、繁中、英文"
+              hint="选了双语，已有字幕须满足所选双语之一，否则补充搜索；多选按顺序优先，找不到时不回退单语或 AI。"
+              persistent-hint
+            />
+            <details v-if="localConfig.auto_subtitle_language_priority.length" class="language-priority-details">
+              <summary>
+                <span class="language-priority-summary">
+                  <span>调整语言顺序</span>
+                  <span class="language-priority-summary-hint">
+                    {{ localConfig.auto_subtitle_language_priority.length }} 项已选，序号 1 优先
+                  </span>
+                </span>
+                <v-icon icon="mdi-chevron-down" size="18" class="language-priority-chevron" aria-hidden="true" />
+              </summary>
+              <div class="language-priority-order">
+                <div
+                  v-for="(language, index) in localConfig.auto_subtitle_language_priority"
+                  :key="language"
+                  class="language-priority-row"
+                  :class="{ 'is-drop-target': dropTargetAutoLanguage === language, 'is-dragging': draggingAutoLanguage === language }"
+                  @dragover.prevent="dropTargetAutoLanguage = language"
+                  @drop="dropAutoLanguage(language, $event)"
+                >
+                  <button
+                    type="button"
+                    class="language-priority-drag-handle"
+                    :aria-label="'拖动' + autoLanguageTitle(language) + '调整顺序'"
+                    title="拖动调整顺序"
+                    draggable="true"
+                    @dragstart="startDraggingAutoLanguage(language, $event)"
+                    @dragend="finishDraggingAutoLanguage"
+                  >
+                    <v-icon icon="mdi-drag" size="18" aria-hidden="true" />
+                  </button>
+                  <span class="language-priority-name">{{ autoLanguageTitle(language) }}</span>
+                  <input
+                    :value="index + 1"
+                    :aria-label="`${autoLanguageTitle(language)}序号`"
+                    type="number"
+                    min="1"
+                    :max="localConfig.auto_subtitle_language_priority.length"
+                    step="1"
+                    class="language-priority-rank"
+                    @change="setAutoLanguageRank(language, $event.target.value)"
+                  >
+                </div>
+              </div>
+            </details>
+            <VSwitch
+              v-model="localConfig.auto_subtitle_language_strict"
+              label="仅接受所选语言"
+              color="info"
+              hint="未选择双语时，开启此项才限制为所选语言；无匹配不回退或提交 AI 翻译。双语要求始终生效。"
               persistent-hint
             />
             <VSelect
@@ -336,129 +507,196 @@ onMounted(() => {
           <div class="config-section">
             <div>
               <div class="config-section-title">在线字幕搜索</div>
-              <p>自动搜索支持 SubHD、Zimuku、射手网(伪) 和 OpenSubtitles；站点波动时仍可使用右侧手动搜索跳转。</p>
+              <p>先选择启用的字幕源，再填写对应平台的设置。站点暂时不可用时，可在搜索页手动跳转。</p>
             </div>
           </div>
 
-          <div class="config-grid two-column">
-            <VSelect
-              v-model="localConfig.online_providers"
-              :items="onlineProviderItems"
-              label="启用字幕源"
-              variant="outlined"
-              density="comfortable"
-              multiple
-              chips
-              hide-details
-            />
-            <VSelect
-              v-model="localConfig.online_use_proxy"
-              :items="[
-                { title: '不使用系统代理', value: false },
-                { title: '使用 MoviePilot 系统代理', value: true },
-              ]"
-              label="API 请求代理"
-              variant="outlined"
-              density="comfortable"
-              hide-details
-            />
-            <VTextField
-              v-model="localConfig.subhd_url"
-              label="SubHD 站点地址"
-              placeholder="https://subhd.tv"
-              variant="outlined"
-              density="comfortable"
-              hide-details
-            />
-            <VTextField
-              v-model="localConfig.zimuku_url"
-              label="Zimuku 站点地址"
-              placeholder="https://zmk.pw"
-              variant="outlined"
-              density="comfortable"
-              hide-details
-            />
-            <VTextField
-              v-model="localConfig.assrt_url"
-              label="射手网(伪) 手动搜索地址"
-              placeholder="https://2.assrt.net"
-              variant="outlined"
-              density="comfortable"
-              hide-details
-            />
-            <VTextField
-              v-model="localConfig.assrt_api_url"
-              label="射手网(伪) API 地址"
-              placeholder="https://api.assrt.net"
-              variant="outlined"
-              density="comfortable"
-              hide-details
-            />
-            <VTextField
-              v-model="localConfig.assrt_api_key"
-              label="射手网(伪) API Key"
-              placeholder="未填写时默认不启用伪射手自动搜索"
-              variant="outlined"
-              density="comfortable"
-              type="password"
-              autocomplete="new-password"
-              hide-details
-            />
-            <VTextField
-              v-model="localConfig.opensubtitles_url"
-              label="OpenSubtitles 手动搜索地址"
-              placeholder="https://www.opensubtitles.com"
-              variant="outlined"
-              density="comfortable"
-              hide-details
-            />
-            <VTextField
-              v-model="localConfig.opensubtitles_api_url"
-              label="OpenSubtitles API 地址"
-              placeholder="https://api.opensubtitles.com/api/v1"
-              variant="outlined"
-              density="comfortable"
-              hide-details
-            />
-            <VTextField
-              v-model="localConfig.opensubtitles_api_key"
-              label="OpenSubtitles API Key"
-              placeholder="用于搜索多语言字幕"
-              variant="outlined"
-              density="comfortable"
-              type="password"
-              autocomplete="new-password"
-              hide-details
-            />
-            <VTextField
-              v-model="localConfig.opensubtitles_username"
-              label="OpenSubtitles 用户名（可选）"
-              placeholder="下载时用于后台登录换取 token"
-              variant="outlined"
-              density="comfortable"
-              autocomplete="username"
-              :error="localConfig.opensubtitles_username.includes('@')"
-              :error-messages="localConfig.opensubtitles_username.includes('@') ? '请输入用户名而非邮箱！' : ''"
-            />
-            <VTextField
-              v-model="localConfig.opensubtitles_password"
-              label="OpenSubtitles 密码（可选）"
-              placeholder="下载时用于后台登录换取 token"
-              variant="outlined"
-              density="comfortable"
-              type="password"
-              autocomplete="new-password"
-              hide-details
-            />
-          </div>
+          <div class="online-source-settings">
+            <div class="config-grid two-column online-source-general">
+              <VSelect
+                v-model="localConfig.online_providers"
+                :items="onlineProviderItems"
+                label="启用字幕源"
+                variant="outlined"
+                density="comfortable"
+                multiple
+                chips
+                hide-details
+              />
+              <VSelect
+                v-model="localConfig.online_use_proxy"
+                :items="[
+                  { title: '不使用系统代理', value: false },
+                  { title: '使用 MoviePilot 系统代理', value: true },
+                ]"
+                label="API 请求代理"
+                variant="outlined"
+                density="comfortable"
+                hide-details
+              />
+            </div>
+            <p class="provider-note online-source-help">填写密钥后，仍需在上方“启用字幕源”中勾选对应平台，并保存设置。</p>
 
-          <VAlert
-            class="mt-4"
-            type="info"
-            variant="tonal"
-            density="compact"
-            text="OpenSubtitles 搜索需要 API Key；下载由插件使用用户名和密码后台登录换取 token。英文字幕结果可下载后提交给 AI 字幕生成翻译。"
-          />
+            <section class="provider-settings" aria-labelledby="provider-subhd-title">
+              <div class="provider-heading">
+                <h3 id="provider-subhd-title">SubHD</h3>
+                <p>无需 API Key</p>
+              </div>
+              <div class="provider-body">
+                <div class="config-grid">
+                  <VTextField
+                    v-model="localConfig.subhd_url"
+                    label="SubHD 站点地址"
+                    placeholder="https://subhd.tv"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                </div>
+              </div>
+            </section>
+            <section class="provider-settings" aria-labelledby="provider-subtitlecat-title">
+              <div class="provider-heading">
+                <h3 id="provider-subtitlecat-title">SubtitleCat</h3>
+                <p>无需 API Key</p>
+              </div>
+              <div class="provider-body">
+                <div class="config-grid">
+                  <VSwitch
+                    v-model="localConfig.subtitlecat_include_translations"
+                    label="接受已有中文站点翻译"
+                    hint="默认只搜索原字幕；开启后另列站点翻译，不会发起在线翻译任务。"
+                    persistent-hint
+                    color="primary"
+                  />
+                </div>
+              </div>
+            </section>
+            <section class="provider-settings" aria-labelledby="provider-subdl-title">
+              <div class="provider-heading">
+                <h3 id="provider-subdl-title">SubDL</h3>
+                <p>需要 API Key</p>
+              </div>
+              <div class="provider-body">
+                <div class="config-grid">
+                  <VTextField
+                    v-model="localConfig.subdl_api_key"
+                    label="SubDL API Key"
+                    placeholder="粘贴从 SubDL 账户获取的密钥"
+                    type="password"
+                    autocomplete="new-password"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                </div>
+                <p class="provider-note">
+                  <a href="https://subdl.com/panel/api" target="_blank" rel="noopener noreferrer" class="provider-help-link">获取 API Key ↗</a>
+                  <span>注册或登录 SubDL 后，在 API 管理页获取密钥。</span>
+                </p>
+              </div>
+            </section>
+            <section class="provider-settings" aria-labelledby="provider-assrt-title">
+              <div class="provider-heading">
+                <h3 id="provider-assrt-title">射手网（伪） / ASSRT</h3>
+                <p>需要 API Key</p>
+              </div>
+              <div class="provider-body">
+                <div class="config-grid">
+                  <VTextField
+                    v-model="localConfig.assrt_api_key"
+                    label="射手网(伪) API Key"
+                    placeholder="未填写时默认不启用伪射手自动搜索"
+                    variant="outlined"
+                    density="comfortable"
+                    type="password"
+                    autocomplete="new-password"
+                    hide-details
+                  />
+                </div>
+                <div class="config-grid two-column">
+                  <VTextField
+                    v-model="localConfig.assrt_api_url"
+                    label="射手网(伪) API 地址"
+                    placeholder="https://api.assrt.net"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                  <VTextField
+                    v-model="localConfig.assrt_url"
+                    label="射手网(伪) 手动搜索地址"
+                    placeholder="https://2.assrt.net"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                </div>
+              </div>
+            </section>
+            <section class="provider-settings" aria-labelledby="provider-opensubtitles-title">
+              <div class="provider-heading">
+                <h3 id="provider-opensubtitles-title">OpenSubtitles</h3>
+                <p>搜索需要 API Key；下载需账号</p>
+              </div>
+              <div class="provider-body">
+                <div class="config-grid">
+                  <VTextField
+                    v-model="localConfig.opensubtitles_api_key"
+                    label="OpenSubtitles API Key"
+                    placeholder="用于搜索多语言字幕"
+                    variant="outlined"
+                    density="comfortable"
+                    type="password"
+                    autocomplete="new-password"
+                    hide-details
+                  />
+                </div>
+                <div class="config-grid two-column">
+                  <VTextField
+                    v-model="localConfig.opensubtitles_username"
+                    label="OpenSubtitles 用户名（可选）"
+                    placeholder="下载时用于后台登录换取 token"
+                    variant="outlined"
+                    density="comfortable"
+                    autocomplete="username"
+                    hide-details="auto"
+                    :error="localConfig.opensubtitles_username.includes('@')"
+                    :error-messages="localConfig.opensubtitles_username.includes('@') ? '请输入用户名而非邮箱！' : ''"
+                  />
+                  <VTextField
+                    v-model="localConfig.opensubtitles_password"
+                    label="OpenSubtitles 密码（可选）"
+                    placeholder="下载时用于后台登录换取 token"
+                    variant="outlined"
+                    density="comfortable"
+                    type="password"
+                    autocomplete="new-password"
+                    hide-details
+                  />
+                </div>
+                <div class="config-grid two-column">
+                  <VTextField
+                    v-model="localConfig.opensubtitles_api_url"
+                    label="OpenSubtitles API 地址"
+                    placeholder="https://api.opensubtitles.com/api/v1"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                  <VTextField
+                    v-model="localConfig.opensubtitles_url"
+                    label="OpenSubtitles 手动搜索地址"
+                    placeholder="https://www.opensubtitles.com"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                </div>
+                <p class="provider-note">下载时使用用户名和密码登录。下载后的英文字幕，可提交给 AI 字幕生成翻译。</p>
+              </div>
+            </section>
+          </div>
 
           <VDivider class="my-5" />
 
@@ -551,6 +789,14 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.config-toolbar-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: rgb(var(--v-theme-surface));
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
 .config-shell {
   padding: 20px;
 }
@@ -565,6 +811,224 @@ onMounted(() => {
 .config-grid {
   display: grid;
   gap: 16px;
+}
+
+.online-source-settings {
+  container-type: inline-size;
+}
+
+.online-source-general {
+  margin-bottom: 8px;
+}
+
+.provider-settings {
+  display: grid;
+  grid-template-columns: 184px minmax(0, 1fr);
+  gap: 24px;
+  padding: 24px 0;
+  border-top: 1px solid var(--smu-border);
+}
+
+.provider-settings:last-child {
+  padding-bottom: 0;
+}
+
+.provider-heading h3 {
+  margin: 0;
+  color: var(--smu-text);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.provider-heading p,
+.provider-note {
+  margin: 6px 0 0;
+  color: var(--smu-text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.online-source-help {
+  margin: 0 0 24px;
+}
+
+.provider-body {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-width: 0;
+}
+
+.provider-body .config-grid {
+  align-items: start;
+}
+
+.provider-body .provider-note {
+  margin: -4px 0 0;
+}
+
+.provider-help-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-right: 12px;
+  color: rgb(var(--v-theme-primary));
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.provider-help-link:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+
+@container (max-width: 720px) {
+  .provider-settings {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .online-source-settings .config-grid.two-column {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.language-priority-details {
+  border: 1px solid var(--smu-border);
+  border-radius: 6px;
+}
+
+.language-priority-details > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: inherit;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.language-priority-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.language-priority-details > summary:hover {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+.language-priority-details > summary:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.language-priority-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.language-priority-details[open] .language-priority-chevron {
+  transform: rotate(180deg);
+}
+
+.language-priority-summary-hint {
+  color: var(--smu-text-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.language-priority-order {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.language-priority-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 64px;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+}
+
+.language-priority-row.is-drop-target {
+  background: rgba(var(--v-theme-primary), 0.08);
+}
+
+.language-priority-row.is-dragging {
+  opacity: 0.48;
+}
+
+.language-priority-drag-handle {
+  display: grid;
+  width: 28px;
+  height: 36px;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--smu-text-muted);
+  cursor: grab;
+  touch-action: none;
+}
+
+.language-priority-drag-handle:hover {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: var(--smu-text);
+}
+
+.language-priority-drag-handle:active {
+  cursor: grabbing;
+}
+
+.language-priority-drag-handle:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+.language-priority-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.language-priority-row > input.language-priority-rank {
+  box-sizing: border-box;
+  width: 64px;
+  height: 32px;
+  min-height: 0;
+  padding: 0 6px;
+  border: 1px solid var(--smu-border);
+  border-radius: 4px;
+  background: rgb(var(--v-theme-surface));
+  color: var(--smu-text);
+  font: inherit;
+  font-size: 14px;
+  text-align: center;
+}
+
+.language-priority-rank:focus-visible {
+  border-color: rgb(var(--v-theme-primary));
+  outline: 2px solid rgba(var(--v-theme-primary), 0.24);
+  outline-offset: 1px;
+}
+
+.language-priority-rank::-webkit-inner-spin-button,
+.language-priority-rank::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+}
+
+.language-priority-rank {
+  appearance: textfield;
 }
 
 .config-grid.two-column {
@@ -590,6 +1054,13 @@ onMounted(() => {
   margin: 4px 0 0;
   color: var(--smu-text-muted);
   font-size: 12px;
+}
+
+.config-toolbar-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .config-switch-line {

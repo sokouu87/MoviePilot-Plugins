@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from .subtitle_language import is_chinese_language_suffix
+from .subtitle_formats import is_bitmap_subtitle, is_text_subtitle
+from .subtitle_encoding import normalize_subtitle_encoding
 
 
 NormalizeText = Callable[[Any], str]
@@ -29,6 +31,50 @@ def build_destination_name(
     return f"{basename}.{language_suffix}{ext.lower()}"
 
 
+def expand_vobsub_items(
+    items: List[Dict[str, Any]],
+    upload_map: Dict[str, Dict[str, Any]],
+    *,
+    normalize_language_suffix: NormalizeLanguageSuffix,
+    http_exception: Any,
+) -> List[Dict[str, Any]]:
+    def pair_key(upload: Dict[str, Any]) -> Tuple[str, str]:
+        member = upload.get("archive_member") or upload.get("source_name", "")
+        stem = Path(str(member).replace("\\", "/")).with_suffix("").as_posix().casefold()
+        return str(upload.get("archive_name", "")).casefold(), stem
+
+    expanded = [dict(item) for item in items]
+    for item in items:
+        upload = upload_map.get(item.get("upload_id"))
+        if not upload:
+            continue
+        path = Path(upload["stored_path"])
+        if not path.is_file() or path.suffix.lower() not in {".idx", ".sub"} or not is_bitmap_subtitle(path):
+            continue
+        extension = ".sub" if path.suffix.lower() == ".idx" else ".idx"
+        companions = [
+            candidate for candidate in upload_map.values()
+            if Path(candidate["stored_path"]).suffix.lower() == extension and pair_key(candidate) == pair_key(upload)
+        ]
+        if len(companions) != 1:
+            raise http_exception(status_code=400, detail=f"VobSub 图片字幕必须提供唯一的同名 IDX/SUB 配对: {upload.get('source_name')}")
+        companion = companions[0]
+        companion_path = Path(companion["stored_path"])
+        if not companion_path.is_file() or not is_bitmap_subtitle(companion_path):
+            raise http_exception(status_code=400, detail=f"VobSub 配对文件无效: {companion.get('source_name')}")
+        selected = [entry for entry in expanded if entry.get("upload_id") == companion["upload_id"]]
+        if selected:
+            if any(
+                entry.get("target_id") != item.get("target_id")
+                or normalize_language_suffix(entry.get("language_suffix")) != normalize_language_suffix(item.get("language_suffix"))
+                for entry in selected
+            ):
+                raise http_exception(status_code=400, detail="VobSub 的 IDX/SUB 必须匹配同一目标和语言")
+            continue
+        expanded.append({**item, "upload_id": companion["upload_id"], "ext": extension})
+    return expanded
+
+
 def build_write_operations(
     items: List[Dict[str, Any]],
     upload_map: Dict[str, Dict[str, Any]],
@@ -42,6 +88,9 @@ def build_write_operations(
     destination_keys = set()
     operations: List[Dict[str, Any]] = []
 
+    items = expand_vobsub_items(
+        items, upload_map, normalize_language_suffix=normalize_language_suffix, http_exception=http_exception
+    )
     for item in items:
         upload_id = normalize_text(item.get("upload_id"))
         target_id = normalize_text(item.get("target_id"))
@@ -64,8 +113,12 @@ def build_write_operations(
         source_path = Path(upload_info["stored_path"])
         if not source_path.exists():
             raise http_exception(status_code=400, detail=f"上传缓存文件不存在: {upload_info.get('source_name')}")
+        if not source_path.is_file() or source_path.stat().st_size == 0:
+            raise http_exception(status_code=400, detail=f"上传字幕内容为空或不是文件: {upload_info.get('source_name')}")
 
         item_ext = normalize_text(item.get("ext")) or upload_info.get("ext") or ".srt"
+        if is_bitmap_subtitle(source_path):
+            item_ext = source_path.suffix.lower()
         item_suffix = normalize_language_suffix(item.get("language_suffix"))
         destination_name = build_destination_name_func(
             target_entry,
@@ -203,6 +256,9 @@ class SubtitleWriter:
         if not is_chinese_language_suffix(operation.get("language_suffix")):
             return
         source_path = Path(operation["write_source_path"])
+        if is_bitmap_subtitle(source_path):
+            operation["simplified_result"] = {"enabled": True, "converted": False, "reason": "bitmap subtitle skipped"}
+            return
         if source_path.suffix.lower() not in owner._subtitle_exts:
             return
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -223,6 +279,23 @@ class SubtitleWriter:
         operation["write_source_path"] = output_path
         operation["simplified_result"] = {"enabled": True, "converted": converted}
 
+    def _refresh_emby_after_write(self, targets: Iterable[Dict[str, Any]]) -> None:
+        owner = self._owner
+        if not getattr(owner, "_emby_refresh_after_subtitle_write", False):
+            return
+        items = list(targets)
+        if not items:
+            return
+        try:
+            services = getattr(owner, "services", None)
+            refresh_factory = getattr(services, "emby_refresh", None)
+            if not callable(refresh_factory):
+                self._logger.warning("[SubtitleManualUpload] Emby 外挂字幕扫描服务不可用，跳过扫描")
+                return
+            refresh_factory().refresh_for_videos(items)
+        except Exception as exc:
+            self._logger.warning("[SubtitleManualUpload] 通知 Emby 扫描外挂字幕失败，不影响字幕写入: %s", exc)
+
     def write_operations_to_disk(
         self,
         *,
@@ -235,16 +308,38 @@ class SubtitleWriter:
         owner = self._owner
         fixed_dir = session_dir / "timeline_fixed"
         simplified_dir = session_dir / "simplified"
+        encoded_dir = session_dir / "utf8"
         for operation in operations:
             operation["write_source_path"] = operation["source_path"]
+            if is_text_subtitle(operation["source_path"]):
+                encoded_path = encoded_dir / f"{operation['upload_info'].get('upload_id')}{operation['source_path'].suffix}"
+                normalize_subtitle_encoding(operation["source_path"], encoded_path)
+                operation["write_source_path"] = encoded_path
             operation["timeline_result"] = None
             operation["simplified_result"] = {"enabled": False, "converted": False}
-            if fix_timeline:
+            if fix_timeline and is_bitmap_subtitle(operation["source_path"]):
+                operation["timeline_result"] = self._timeline_result_type(
+                    enabled=True,
+                    applied=False,
+                    reason="bitmap subtitle skipped",
+                    base="bitmap",
+                    offset_seconds=0.0,
+                    scale_factor=1.0,
+                    score=0.0,
+                )
+                owner._set_timeline_task(
+                    operation,
+                    status="skipped",
+                    message="图片字幕跳过文本调轴，保留原始文件",
+                    timeline_result=operation["timeline_result"],
+                )
+                self._logger.info("[SubtitleManualUpload] 图片字幕保留原始文件，跳过文本调轴 source=%s", operation["upload_info"].get("source_name"))
+            elif fix_timeline:
                 owner._set_timeline_task(operation, status="pending", message="等待智能调轴")
                 fixed_dir.mkdir(parents=True, exist_ok=True)
                 fixed_source_path = fixed_dir / f"{operation['upload_info'].get('upload_id')}{operation['source_path'].suffix}"
                 if operation["video_path"].suffix.lower() in owner._stream_exts:
-                    shutil.copyfile(operation["source_path"], fixed_source_path)
+                    shutil.copyfile(operation["write_source_path"], fixed_source_path)
                     operation["write_source_path"] = fixed_source_path
                     operation["timeline_result"] = self._timeline_result_type(
                         enabled=True,
@@ -272,7 +367,7 @@ class SubtitleWriter:
                     owner._set_timeline_task(operation, status="in_progress", message="智能调轴处理中")
                     timeline_result = owner._run_timeline_fix(
                         video_path=operation["video_path"],
-                        subtitle_path=operation["source_path"],
+                        subtitle_path=operation["write_source_path"],
                         output_path=fixed_source_path,
                         allow_risky_offset=allow_risky_offset,
                     )
@@ -342,12 +437,15 @@ class SubtitleWriter:
                 }
             )
 
-        touched_videos: Dict[str, Path] = {
-            str(operation["video_path"]): operation["video_path"]
+        touched_targets: Dict[str, Dict[str, Any]] = {
+            str(operation["video_path"]): operation["target_entry"]
             for operation in operations
         }
-        for video_path in touched_videos.values():
+        for video_path in (Path(path) for path in touched_targets):
             owner._remove_ext_marks(video_path)
+            inventory = owner.services.subtitle_inventory()
+            if hasattr(inventory, "invalidate_directory"):
+                inventory.invalidate_directory(video_path.parent)
 
         fixed_count = len(
             [
@@ -364,6 +462,7 @@ class SubtitleWriter:
             ]
         )
         owner._invalidate_match_history_cache()
+        self._refresh_emby_after_write(touched_targets.values())
         return written_results, fixed_count, simplified_count
 
     def apply_upload_session(
@@ -516,6 +615,9 @@ class SubtitleWriter:
                 visited_paths.add(path_key)
                 try:
                     subtitle_path.unlink()
+                    inventory = owner.services.subtitle_inventory()
+                    if hasattr(inventory, "invalidate_directory"):
+                        inventory.invalidate_directory(subtitle_path.parent)
                     deleted.append(
                         {
                             "target_id": clean_target_id,
@@ -571,6 +673,9 @@ class SubtitleWriter:
             raise self._http_exception(status_code=500, detail=f"删除字幕失败: {exc}") from exc
 
         owner._invalidate_match_history_cache()
+        inventory = owner.services.subtitle_inventory()
+        if hasattr(inventory, "invalidate_directory"):
+            inventory.invalidate_directory(target_path.parent)
         return (
             {
                 "deleted": {
@@ -618,6 +723,9 @@ class SubtitleWriter:
             raise self._http_exception(status_code=500, detail=f"恢复字幕备份失败: {exc}") from exc
 
         owner._invalidate_match_history_cache()
+        inventory = owner.services.subtitle_inventory()
+        if hasattr(inventory, "invalidate_directory"):
+            inventory.invalidate_directory(target_path.parent)
         return (
             {
                 "restored": {

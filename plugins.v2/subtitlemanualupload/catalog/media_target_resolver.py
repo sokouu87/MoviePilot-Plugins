@@ -19,6 +19,7 @@ from .target_normalizers import (
 )
 
 SubtitleFilesForTarget = Callable[[Dict[str, Any]], List[Dict[str, Any]]]
+SubtitleFilesForTargets = Callable[[Iterable[Dict[str, Any]]], Dict[str, List[Dict[str, Any]]]]
 
 
 class TargetEntryCacheProtocol(Protocol):
@@ -39,6 +40,7 @@ class MediaTargetResolver:
         hash_text: HashText,
         extract_episode_hint: EpisodeHint,
         subtitle_files_provider: SubtitleFilesForTarget,
+        subtitle_files_batch_provider: Optional[SubtitleFilesForTargets],
         load_local_entries: Callable[..., List[Dict[str, Any]]],
         group_entries_as_media: Callable[[List[Dict[str, Any]], int], List[Dict[str, Any]]],
         tmdb_detail_for_media: Callable[[Dict[str, Any]], Dict[str, Any]],
@@ -54,6 +56,7 @@ class MediaTargetResolver:
         self._hash_text = hash_text
         self._extract_episode_hint = extract_episode_hint
         self._subtitle_files_provider = subtitle_files_provider
+        self._subtitle_files_batch_provider = subtitle_files_batch_provider
         self._load_local_entries = load_local_entries
         self._group_entries_as_media = group_entries_as_media
         self._tmdb_detail_for_media = tmdb_detail_for_media
@@ -141,6 +144,7 @@ class MediaTargetResolver:
 
         return {
             "id": entry_id,
+            "origin": "transfer_history",
             "media_key": media_key,
             "media_type": media_type,
             "title": title,
@@ -331,9 +335,11 @@ class MediaTargetResolver:
             "local_count": 0,
             "season_count": 0,
         }
-        tmdb_detail = self._tmdb_detail_for_media(media)
-        if tmdb_detail:
-            self._apply_tmdb_detail(media, tmdb_detail)
+        tmdb_detail: Dict[str, Any] = {}
+        if self._safe_int(media.get("tmdb_id"), 0):
+            tmdb_detail = self._tmdb_detail_for_media(media)
+            if tmdb_detail:
+                self._apply_tmdb_detail(media, tmdb_detail)
         seasons = self.merge_seasons(entries) if media.get("media_type") == "tv" else []
 
         season_value = self._normalize_text(season)
@@ -346,7 +352,25 @@ class MediaTargetResolver:
             visible_entries = [entry for entry in entries if self._safe_int(entry.get("season"), 0) == selected_season]
 
         self._target_entry_cache.remember(visible_entries)
-        targets = [self.target_from_entry(entry) for entry in visible_entries]
+        subtitles_by_target = (
+            self._subtitle_files_batch_provider(visible_entries)
+            if self._subtitle_files_batch_provider
+            else {}
+        )
+        targets = [
+            self.target_from_entry(
+                entry,
+                subtitles=(
+                    subtitles_by_target.get(
+                        self._normalize_text(entry.get("id") or entry.get("path")),
+                        [],
+                    )
+                    if self._subtitle_files_batch_provider
+                    else None
+                ),
+            )
+            for entry in visible_entries
+        ]
         if tmdb_detail:
             for target in targets:
                 self._apply_tmdb_detail(target, tmdb_detail)

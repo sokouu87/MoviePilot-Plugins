@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+from ..matching.subtitle_language import auto_rank_candidates, required_auto_languages
 from ..online.online_subtitle import build_search_keywords
 
 
@@ -57,10 +58,14 @@ class AutoTransferProcessor:
         task_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         owner = self._owner
+        required = required_auto_languages(
+            getattr(owner, "_auto_subtitle_language_priority", None),
+            strict=bool(getattr(owner, "_auto_subtitle_language_strict", False)),
+        )
         target = target or self._collaborators.target_from_entry(entry)
         providers = self._collaborators.search_providers()
         if not providers:
-            return {"status": "skipped", "reason": "未配置可用 API 字幕源", "target": target.get("label")}
+            return {"status": "skipped", "reason": "未配置可用在线字幕源", "target": target.get("label")}
         keywords = self._collaborators.search_keywords_for_entry(entry, target)
         if not keywords:
             return {"status": "skipped", "reason": "没有可用搜索关键词", "target": target.get("label")}
@@ -81,10 +86,15 @@ class AutoTransferProcessor:
             for item in search_result.get("results") or []
             if item.get("downloadable") is not False and owner._safe_int(item.get("score"), 0) >= owner._auto_search_min_score
         ]
+        candidates = auto_rank_candidates(
+            candidates,
+            getattr(owner, "_auto_subtitle_language_priority", None),
+            strict=bool(getattr(owner, "_auto_subtitle_language_strict", False)),
+        )
         if not candidates:
             return {
                 "status": "skipped",
-                "reason": "没有高置信可下载结果",
+                "reason": "未找到符合语言要求的字幕" if required is not None else "没有高置信可下载结果",
                 "target": target.get("label"),
                 "results": len(search_result.get("results") or []),
                 "search_results": len(search_result.get("results") or []),
@@ -133,6 +143,7 @@ class AutoTransferProcessor:
                     for item in extracted:
                         item["online_source"] = downloaded.get("provider")
                         item["online_title"] = result.get("title", "")
+                        item["translation_source"] = result.get("translation_source", "unknown")
                         if not item.get("archive_name") and source_name != item.get("source_name"):
                             item["archive_name"] = source_name
                     prepared_uploads.extend(extracted)
@@ -199,7 +210,7 @@ class AutoTransferProcessor:
 
         return {
             "status": "skipped",
-            "reason": last_reason or "高置信结果未解析到可用字幕文件",
+            "reason": last_reason or ("未找到符合语言要求的字幕" if required is not None else "高置信结果未解析到可用字幕文件"),
             "target": target.get("label"),
             "candidate_count": len(candidates),
             "search_results": len(search_result.get("results") or []),
@@ -208,10 +219,11 @@ class AutoTransferProcessor:
     def search_and_write_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         target = self._collaborators.target_from_entry(entry)
         if self._collaborators.auto_target_has_chinese_subtitle(entry, target):
-            return {"status": "skipped", "reason": "目标已有中文字幕", "target": target.get("label")}
+            reason = "目标已有符合语言要求的字幕"
+            return {"status": "skipped", "reason": reason, "target": target.get("label")}
         if target.get("has_subtitle"):
             self._logger.info(
-                "[SubtitleManualUpload] 目标已有外挂字幕但未确认中文，继续自动匹配/AI target=%s",
+                "[SubtitleManualUpload] 目标已有外挂字幕但未满足语言要求，继续自动匹配 target=%s",
                 target.get("label"),
             )
         return self.search_write_subtitle(entry, target)
@@ -287,15 +299,22 @@ class AutoTransferProcessor:
         task_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         owner = self._owner
+        required = required_auto_languages(
+            getattr(owner, "_auto_subtitle_language_priority", None),
+            strict=bool(getattr(owner, "_auto_subtitle_language_strict", False)),
+        )
         target = self._collaborators.target_from_entry(entry)
         strategy = owner._normalize_auto_transfer_subtitle_strategy(owner._auto_transfer_subtitle_strategy)
+        if target.get("is_stream"):
+            strategy = "online_source_only"
         base = {"strategy": strategy, "target": target.get("label")}
 
         if self._collaborators.auto_target_has_chinese_subtitle(entry, target):
-            return {**base, "status": "skipped", "reason": "目标已有中文字幕"}
+            reason = "目标已有符合语言要求的字幕"
+            return {**base, "status": "skipped", "reason": reason}
         if target.get("has_subtitle"):
             self._logger.info(
-                "[SubtitleManualUpload] 目标已有外挂字幕但未确认中文，继续自动匹配/AI target=%s",
+                "[SubtitleManualUpload] 目标已有外挂字幕但未满足语言要求，继续自动匹配 target=%s",
                 target.get("label"),
             )
 
@@ -310,6 +329,8 @@ class AutoTransferProcessor:
             )
 
         if strategy == "ai_source_only":
+            if required is not None:
+                return {**base, "status": "skipped", "reason": "所选语言要求无法由自动 AI 来源生成保证，请使用在线字幕策略"}
             return {**base, **self._collaborators.submit_ai_for_entry(entry, target, "策略 ai_source_only")}
 
         search_result = self._collaborators.call_search_write_subtitle(
@@ -318,8 +339,10 @@ class AutoTransferProcessor:
             queue_rate_limited=queue_rate_limited,
             task_ids=task_ids,
         )
-        if strategy == "online_source_only" or search_result.get("status") == "written":
+        if required is not None or strategy == "online_source_only" or search_result.get("status") == "written":
             return {**base, **search_result}
 
+        if target.get("is_stream"):
+            return {**base, **search_result}
         ai_result = self._collaborators.submit_ai_for_entry(entry, target, "搜索无单一高置信结果后兜底")
         return {**base, **ai_result, "search": search_result}

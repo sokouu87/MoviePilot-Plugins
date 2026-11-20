@@ -8,6 +8,8 @@ import json
 import shutil
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+from ..matching.subtitle_language import auto_rank_candidates, required_auto_languages
+from ..matching.subtitle_validation import validate_online_subtitle_files
 from ..online.online_subtitle import build_search_keywords
 
 
@@ -136,6 +138,7 @@ class AutoTransferSeasonCache:
         session_dir = owner.services.upload_session().get_session_root() / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
         try:
+            validate_online_subtitle_files(cached.get("items") or [])
             result = self._collaborators.write_prepared_uploads_for_entries(
                 target_entries=entries,
                 prepared_uploads=cached.get("items") or [],
@@ -155,11 +158,15 @@ class AutoTransferSeasonCache:
         task_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         owner = self._owner
+        required = required_auto_languages(
+            getattr(owner, "_auto_subtitle_language_priority", None),
+            strict=bool(getattr(owner, "_auto_subtitle_language_strict", False)),
+        )
         if not entries:
             return {"status": "skipped", "reason": "没有待处理目标", "written_by_target": {}}
         providers = self._collaborators.search_providers()
         if not providers:
-            return {"status": "skipped", "reason": "未配置可用 API 字幕源", "written_by_target": {}}
+            return {"status": "skipped", "reason": "未配置可用在线字幕源", "written_by_target": {}}
         targets = [self._collaborators.target_from_entry(entry) for entry in entries]
         media = self._collaborators.media_for_transfer_entry(entries[0])
         owner._apply_tmdb_detail(targets[0], media)
@@ -180,10 +187,15 @@ class AutoTransferSeasonCache:
             for item in search_result.get("results") or []
             if item.get("downloadable") is not False and owner._safe_int(item.get("score"), 0) >= owner._auto_search_min_score
         ]
+        candidates = auto_rank_candidates(
+            candidates,
+            getattr(owner, "_auto_subtitle_language_priority", None),
+            strict=bool(getattr(owner, "_auto_subtitle_language_strict", False)),
+        )
         if not candidates:
             return {
                 "status": "skipped",
-                "reason": "没有高置信可下载整季结果",
+                "reason": "未找到符合语言要求的字幕" if required is not None else "没有高置信可下载整季结果",
                 "written_by_target": {},
                 "search_results": len(search_result.get("results") or []),
             }
@@ -212,6 +224,7 @@ class AutoTransferSeasonCache:
                     for item in extracted:
                         item["online_source"] = downloaded.get("provider")
                         item["online_title"] = result.get("title", "")
+                        item["translation_source"] = result.get("translation_source", "unknown")
                         if not item.get("archive_name") and source_name != item.get("source_name"):
                             item["archive_name"] = source_name
                     prepared_uploads.extend(extracted)
@@ -258,7 +271,7 @@ class AutoTransferSeasonCache:
             return best_partial_result
         return {
             "status": "skipped",
-            "reason": last_reason or "整季包未能写入任何字幕",
+            "reason": last_reason or ("未找到符合语言要求的字幕" if required is not None else "整季包未能写入任何字幕"),
             "written_by_target": {},
             "candidate_count": len(candidates),
             "search_results": len(search_result.get("results") or []),
@@ -285,11 +298,12 @@ class AutoTransferSeasonCache:
             target = self._collaborators.target_from_entry(entry)
             base = {"strategy": strategy, "target": target.get("label")}
             if self._collaborators.auto_target_has_chinese_subtitle(entry, target):
-                results[key] = {**base, "status": "skipped", "reason": "目标已有中文字幕"}
+                reason = "目标已有符合语言要求的字幕"
+                results[key] = {**base, "status": "skipped", "reason": reason}
                 continue
             if target.get("has_subtitle"):
                 self._logger.info(
-                    "[SubtitleManualUpload] 目标已有外挂字幕但未确认中文，继续自动匹配/AI target=%s",
+                    "[SubtitleManualUpload] 目标已有外挂字幕但未满足语言要求，继续自动匹配 target=%s",
                     target.get("label"),
                 )
             if owner._auto_skip_chinese_media_on_transfer:

@@ -32,9 +32,11 @@ class OnlineSubtitleResult:
     identity_status: str = ""
     reject_reason: str = ""
     match_detail: str = ""
+    translation_source: str = "unknown"
 
     def to_dict(self) -> Dict[str, Any]:
         from .language import _language_category_from_text
+        from ..matching.subtitle_language import online_result_language_bucket
 
         return {
             "provider": self.provider,
@@ -44,6 +46,7 @@ class OnlineSubtitleResult:
             "page_url": self.page_url,
             "download_url": self.download_url,
             "language": self.language,
+            "language_bucket": online_result_language_bucket({"title": self.title, "language": self.language}),
             "format": self.format,
             "season": self.season,
             "episode": self.episode,
@@ -63,6 +66,7 @@ class OnlineSubtitleResult:
             "identity_status": self.identity_status,
             "reject_reason": self.reject_reason,
             "match_detail": self.match_detail,
+            "translation_source": self.translation_source,
         }
 
 
@@ -70,6 +74,27 @@ class OnlineSubtitleResult:
 class HtmlLink:
     href: str
     text: str
+
+
+class HumanVerificationRequiredError(ValueError):
+    pass
+
+
+class SubtitleVerificationRequiredError(HumanVerificationRequiredError):
+    def __init__(self, *, provider: str, page_url: str, result_id: str):
+        super().__init__("请先在 SubHD 完成人机核验，再下载字幕。")
+        self.provider = provider
+        self.page_url = page_url
+        self.result_id = result_id
+
+    def to_payload(self) -> Dict[str, Any]:
+        return {
+            "code": "subtitle_verification_required",
+            "provider": self.provider,
+            "page_url": self.page_url,
+            "result_id": self.result_id,
+            "message": str(self),
+        }
 
 
 class CaptchaRequiredError(ValueError):

@@ -1,6 +1,6 @@
 # MoviePilot-Plugins
 
-面向 MoviePilot V2 的个人插件仓库，目前主要维护字幕匹配、AI 字幕生成和 Emby 媒体库封面生成。
+面向 MoviePilot 的个人插件仓库，目前主要维护字幕匹配、AI 字幕生成和 Emby 媒体库封面生成。
 
 ## 展示图
 
@@ -17,7 +17,8 @@
 
 | 插件 | 目录 | 版本 | 主要功能 |
 | --- | --- | --- | --- |
-| 海拉鲁字幕大师 | `plugins.v2/subtitlemanualupload` | 0.1.83 | 字幕搜索、下载、上传、匹配、改名、调轴、入库自动处理 |
+| 海拉鲁字幕大师 | `plugins.v2/subtitlemanualupload` | 0.1.102 | MoviePilot V2，支持 MPLite 接续 SubHD 人工核验 |
+| 海拉鲁字幕大师 | `plugins.v3/subtitlemanualupload` | 1.2.20 | MoviePilot V3，支持 MPLite 接续 SubHD 人工核验 |
 | AI字幕生成(联动版) | `plugins.v2/autosubv3` | 3.5.54 | 音轨识别、字幕提取、AI 翻译、任务队列、联动字幕匹配 |
 | Emby媒体库封面生成 | `plugins.v2/mediacovergenerator` | 0.9.10 | 生成 Emby/Jellyfin 媒体库静态或动态封面 |
 
@@ -66,7 +67,7 @@
 在 MoviePilot 第三方插件仓库中添加本仓库地址：
 
 ```text
-https://github.com/ifsherlock/MoviePilot-Plugins
+https://github.com/sokouu87/MoviePilot-Plugins
 ```
 
 如只测试字幕链路，建议同时安装：

@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..config.config_schema import normalize_auto_multi_subtitle_mode
-from ..matching.subtitle_language import auto_subtitle_sort_key, is_chinese_language_suffix
+from ..matching.subtitle_language import auto_subtitle_sort_key, is_chinese_language_suffix, language_matches_preferences, required_auto_languages
+from ..matching.subtitle_formats import is_bitmap_subtitle
 from ..catalog.target_resolver import (
     auto_fill_missing_targets as fill_missing_target_ids,
     suggest_target as suggest_target_id,
@@ -62,6 +63,7 @@ class AutoTransferWriteStrategy:
                     "detected_label": language_profile["label"],
                     "language_suffix": language_profile["suffix"],
                     "online_source": prepared.get("online_source", ""),
+                    "translation_source": prepared.get("translation_source", "unknown"),
                 }
             )
         fill_missing_target_ids(items, targets, extract_episode_hint=owner._extract_episode_hint)
@@ -78,9 +80,15 @@ class AutoTransferWriteStrategy:
             return []
 
         mode = normalize_auto_multi_subtitle_mode(getattr(owner, "_auto_multi_subtitle_mode", "best"))
+        required = required_auto_languages(
+            getattr(owner, "_auto_subtitle_language_priority", None),
+            strict=bool(getattr(owner, "_auto_subtitle_language_strict", False)),
+        )
         target_lookup = {item.get("id"): item for item in targets if item.get("id")}
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for item in items:
+            if required is not None and not language_matches_preferences(item.get("language_suffix"), required):
+                continue
             target_id = owner._normalize_text(item.get("target_id"))
             if not target_id:
                 continue
@@ -133,7 +141,7 @@ class AutoTransferWriteStrategy:
         if not chosen_items:
             return {
                 "status": "skipped",
-                "reason": "整季包未能匹配到当前入库集数",
+                "reason": "下载包中没有符合语言要求且匹配目标的字幕",
                 "written_by_target": {},
                 "prepared_count": len(prepared_uploads),
             }
@@ -143,14 +151,20 @@ class AutoTransferWriteStrategy:
             for target_id in target_entry_map
             if target_id not in used_targets
         ]
-        chinese_items = [item for item in chosen_items if is_chinese_language_suffix(item.get("language_suffix"))]
-        foreign_items = [item for item in chosen_items if not is_chinese_language_suffix(item.get("language_suffix"))]
+        direct_items = []
+        foreign_items = []
+        for item in chosen_items:
+            source_path = upload_map[item["upload_id"]]["stored_path"]
+            if getattr(owner, "_auto_subtitle_language_strict", False) or is_chinese_language_suffix(item.get("language_suffix")) or is_bitmap_subtitle(source_path):
+                direct_items.append(item)
+            else:
+                foreign_items.append(item)
 
         written: List[Dict[str, Any]] = []
         simplified_count = 0
         operations: List[Dict[str, Any]] = []
-        if chinese_items:
-            operations = owner._subtitle_writer().build_write_operations(chinese_items, upload_map, target_entry_map)
+        if direct_items:
+            operations = owner._subtitle_writer().build_write_operations(direct_items, upload_map, target_entry_map)
             written, _, simplified_count = self._collaborators.write_operations_to_disk(
                 session_dir=session_dir,
                 operations=operations,

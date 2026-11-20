@@ -46,7 +46,9 @@ from ..catalog.target_resolver import (
     SubtitleInventory,
     TargetEntryCache,
 )
+from ..catalog.manual_strm import ManualStrmCatalog
 from ..timeline.timeline_fixer import TimelineFixResult, check_timeline_fixer_dependencies, fix_subtitle_timeline
+from ..integrations.emby_refresh import EmbyRefreshService
 from ..timeline.timeline_tasks import TimelineTaskStore
 from ..matching.tongwen import convert_subtitle_file_to_simplified
 from ..upload.upload_session import (
@@ -54,6 +56,7 @@ from ..upload.upload_session import (
     ArchiveSubtitleExtractor,
     UploadSessionService,
 )
+from .manual_strm_monitor import ManualStrmMonitor
 
 
 def archive_dependency_service(owner_cls, status_setter=None) -> ArchiveDependencyService:
@@ -109,6 +112,9 @@ def subtitle_inventory(owner_cls) -> SubtitleInventory:
         embedded_probe_cache=owner_cls._embedded_subtitle_probe_cache,
         embedded_probe_cache_max_size=owner_cls._embedded_subtitle_probe_cache_max_size,
         trust_transfer_history_paths=getattr(owner_cls, "_trust_transfer_history_paths", False),
+        subtitle_directory_cache=owner_cls._subtitle_directory_cache,
+        subtitle_directory_cache_max_size=owner_cls._subtitle_directory_cache_max_size,
+        subtitle_directory_cache_ttl_seconds=owner_cls._subtitle_directory_cache_ttl_seconds,
         normalize_text=owner_cls._normalize_text,
         normalize_language_suffix=owner_cls._normalize_language_suffix,
         detect_language_profile=owner_cls._detect_language_profile,
@@ -137,6 +143,10 @@ def subtitle_writer(owner) -> SubtitleWriter:
         ),
         timeline_cache_dir=lambda: owner.get_data_path() / "timeline_cache",
     )
+
+
+def emby_refresh_service() -> EmbyRefreshService:
+    return EmbyRefreshService(logger)
 
 
 def target_entry_cache(owner) -> TargetEntryCache:
@@ -199,6 +209,7 @@ def auto_transfer_service(owner) -> AutoTransferService:
 
 
 def target_resolver(owner) -> MediaTargetResolver:
+    subtitle_inventory_service = owner.services.subtitle_inventory()
     return MediaTargetResolver(
         settings_obj=settings,
         meta_info_path=MetaInfoPath,
@@ -208,7 +219,8 @@ def target_resolver(owner) -> MediaTargetResolver:
         safe_int=owner._safe_int,
         hash_text=owner._hash_text,
         extract_episode_hint=owner._extract_episode_hint,
-        subtitle_files_provider=owner.services.subtitle_inventory().subtitle_files_for_target,
+        subtitle_files_provider=subtitle_inventory_service.subtitle_files_for_target,
+        subtitle_files_batch_provider=getattr(subtitle_inventory_service, "subtitle_files_for_targets", None),
         load_local_entries=owner.services.local_media_catalog().load_local_entries,
         group_entries_as_media=owner.services.local_media_catalog().group_entries_as_media,
         tmdb_detail_for_media=owner._tmdb_detail_for_media,
@@ -224,6 +236,14 @@ def local_media_catalog(owner) -> LocalMediaCatalog:
         http_exception=HTTPException,
         logger=logger,
         target_entry_cache=target_entry_cache(owner),
+        manual_strm_catalog=ManualStrmCatalog(
+            normalize_text=owner._normalize_text,
+            safe_int=owner._safe_int,
+            hash_text=owner._hash_text,
+            extract_episode_hint=owner._extract_episode_hint,
+            meta_info_path=MetaInfoPath,
+            logger_warning=logger.warning,
+        ),
         threading_module=owner._host_module_value("threading", threading),
     )
 
@@ -262,6 +282,8 @@ def online_service(owner) -> OnlineSubtitleSearchService:
         engine=owner._online_engine,
         use_proxy=owner._online_use_proxy,
         provider_roots=owner._online_site_urls,
+        subdl_api_key=owner._subdl_api_key,
+        subtitlecat_include_translations=owner._subtitlecat_include_translations,
         assrt_api_key=owner._assrt_api_key,
         assrt_api_url=owner._assrt_api_url,
         opensubtitles_api_key=owner._opensubtitles_api_key,
@@ -269,3 +291,7 @@ def online_service(owner) -> OnlineSubtitleSearchService:
         opensubtitles_username=owner._opensubtitles_username,
         opensubtitles_password=owner._opensubtitles_password,
     )
+
+
+def manual_strm_monitor(owner) -> ManualStrmMonitor:
+    return ManualStrmMonitor(owner, logger=logger)

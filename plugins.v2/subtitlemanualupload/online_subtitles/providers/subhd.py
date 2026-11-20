@@ -25,26 +25,62 @@ class SubHDProvider(BaseSubtitleProvider):
         return self._search_keyword(keyword, targets)
 
     def search_all(self, keywords: List[str], targets: List[Dict[str, Any]], scope: str) -> List[OnlineSubtitleResult]:
+        errors: List[str] = []
+
+        def attempt(label: str, callback):
+            try:
+                return callback()
+            except Exception as exc:
+                message = _compact_error_message(str(exc))
+                if message not in errors:
+                    errors.append(message)
+                logger.warning(
+                    "[SubtitleManualUpload] SubHD 搜索步骤失败，继续后续候选 step=%s error=%s",
+                    label,
+                    message,
+                )
+                return []
+
+        def search_keywords() -> List[OnlineSubtitleResult]:
+            for keyword in keywords:
+                found = attempt(f"keyword:{keyword}", lambda keyword=keyword: self._search_keyword(keyword, targets))
+                if found:
+                    return found
+            return []
+
+        found = search_keywords()
+        if found:
+            return found
+
         douban_id = _first_target_value(targets, "douban_id")
         if douban_id:
-            found = self._search_detail(str(douban_id), targets, "SubHD 豆瓣 ID 查询")
-            if found:
-                return found
-        for keyword in keywords:
-            found = self._search_keyword(keyword, targets)
+            found = attempt(
+                "douban-detail",
+                lambda: self._search_detail(str(douban_id), targets, "SubHD 豆瓣 ID 查询"),
+            )
             if found:
                 return found
         fallback = self._fallback_ids_from_douban(keywords, targets)
         fallback_douban = fallback.get("douban_id")
         if fallback_douban and fallback_douban != douban_id:
-            found = self._search_detail(fallback_douban, targets, "SubHD 豆瓣搜索兜底")
+            found = attempt(
+                "douban-fallback",
+                lambda: self._search_detail(fallback_douban, targets, "SubHD 豆瓣搜索兜底"),
+            )
             if found:
                 return found
         fallback_imdb = fallback.get("imdb_id") or _first_target_value(targets, "imdb_id")
         if fallback_imdb:
-            resolved = self._resolve_imdb(fallback_imdb)
+            resolved = attempt("imdb-resolve", lambda: self._resolve_imdb(fallback_imdb))
             if resolved:
-                return self._search_detail(resolved, targets, "SubHD IMDb 兜底查询")
+                found = attempt(
+                    "imdb-detail",
+                    lambda: self._search_detail(resolved, targets, "SubHD IMDb 兜底查询"),
+                )
+                if found:
+                    return found
+        if errors:
+            raise ValueError(_provider_error_summary(errors, len(keywords)))
         return []
 
     def _search_keyword(self, keyword: str, targets: List[Dict[str, Any]]) -> List[OnlineSubtitleResult]:
@@ -79,14 +115,22 @@ class SubHDProvider(BaseSubtitleProvider):
         if results:
             return _dedupe_results(results)[:30]
         for sid in detail_candidates[:4]:
-            results.extend(
-                self._search_detail(
-                    sid,
-                    targets,
-                    f"SubHD 标题查询 · {keyword}",
-                    match_keyword=keyword,
+            try:
+                results.extend(
+                    self._search_detail(
+                        sid,
+                        targets,
+                        f"SubHD 标题查询 · {keyword}",
+                        match_keyword=keyword,
+                    )
                 )
-            )
+            except Exception as exc:
+                logger.warning(
+                    "[SubtitleManualUpload] SubHD 详情候选失败，继续下一个 detail_id=%s error=%s",
+                    sid,
+                    _compact_error_message(str(exc)),
+                )
+                continue
             if results:
                 break
         return _dedupe_results(results)[:30]
@@ -123,11 +167,18 @@ class SubHDProvider(BaseSubtitleProvider):
         page_url = f"{self.root_url}/d/{quote(detail_id)}"
         status, text, final_url = self.fetcher.get_text(page_url, referer=self.root_url)
         if status >= 400 or not text:
-            logger.warning(
-                "[SubtitleManualUpload] SubHD 详情页不可用 detail_id=%s status=%s",
-                detail_id,
-                status,
-            )
+            if status == 404:
+                logger.info(
+                    "[SubtitleManualUpload] SubHD 未找到豆瓣 ID 对应详情页，跳过 detail_id=%s status=%s",
+                    detail_id,
+                    status,
+                )
+            else:
+                logger.warning(
+                    "[SubtitleManualUpload] SubHD 详情页不可用 detail_id=%s status=%s",
+                    detail_id,
+                    status,
+                )
             return []
         results = self._parse_subtitles(
             text,
@@ -206,10 +257,22 @@ class SubHDProvider(BaseSubtitleProvider):
 
     def _fallback_ids_from_douban(self, keywords: List[str], targets: List[Dict[str, Any]]) -> Dict[str, str]:
         for keyword in keywords[:2]:
-            candidate = _search_douban_subject(keyword, _target_year_from_targets(targets), self.fetcher)
+            candidate = _search_douban_subject(
+                keyword,
+                _target_year_from_targets(targets),
+                self.fetcher,
+                targets,
+            )
             if candidate.get("douban_id"):
                 if not candidate.get("imdb_id"):
                     candidate["imdb_id"] = _fetch_douban_imdb_id(candidate["douban_id"], self.fetcher)
+                logger.info(
+                    "[SubtitleManualUpload] 豆瓣兜底候选通过身份校验 keyword=%s douban_id=%s title=%s year=%s",
+                    keyword,
+                    candidate.get("douban_id"),
+                    candidate.get("title"),
+                    candidate.get("year"),
+                )
                 return candidate
         return {}
 
@@ -274,7 +337,13 @@ class SubHDProvider(BaseSubtitleProvider):
                 filename, content, final_url = self.fetcher.get_bytes(file_url, referer=referer)
                 if content and not _looks_like_html_bytes(content, filename or final_url):
                     return filename, content
+                if _is_subhd_verification_notice(_decode_bytes(content, None)):
+                    raise HumanVerificationRequiredError("字幕站点需要人机核验")
+            except HumanVerificationRequiredError:
+                raise
             except Exception as exc:
+                if _is_subhd_verification_notice(str(exc)):
+                    raise HumanVerificationRequiredError("字幕站点需要人机核验") from exc
                 logger.info("[SubtitleManualUpload] SubHD 下载候选链接失败 host=%s error=%s", _host(file_url), exc)
         return None
 
@@ -282,8 +351,34 @@ class SubHDProvider(BaseSubtitleProvider):
         page_url = str(result.get("page_url") or result.get("download_url") or "").replace("subhd-page:", "", 1)
         if not page_url:
             raise ValueError("SubHD 缺少下载页面")
+        try:
+            return self._download_from_page(page_url, captcha_code)
+        except ValueError as exc:
+            if not isinstance(exc, HumanVerificationRequiredError) and not _is_subhd_verification_notice(str(exc)):
+                raise
+            root = urlparse(self.root_url)
+            page = urlparse(page_url)
+            detail = re.fullmatch(r"/a/([A-Za-z0-9_-]+)/?", page.path)
+            same_origin = (page.scheme, page.netloc.lower()) == (root.scheme, root.netloc.lower())
+            if root.scheme != "https" or not root.hostname or root.username is not None or not same_origin or not detail:
+                raise
+            result_id = detail.group(1)
+            raise SubtitleVerificationRequiredError(
+                provider=self.provider_id, page_url=urljoin(self.root_url, f"/a/{result_id}"), result_id=result_id,
+            ) from exc
+
+    @staticmethod
+    def _check_api_verification(data: Dict[str, Any]) -> None:
+        if (not data.get("success") or data.get("pass") is False) and any(
+            _is_subhd_verification_notice(data.get(key)) for key in ("msg", "message", "detail")
+        ):
+            raise HumanVerificationRequiredError("字幕站点需要人机核验")
+
+    def _download_from_page(self, page_url: str, captcha_code: str) -> Tuple[str, bytes]:
         status, text, _ = self.fetcher.get_text(page_url, referer=self.root_url)
         if status >= 400 or not text:
+            if _is_subhd_verification_notice(text):
+                raise HumanVerificationRequiredError("字幕站点需要人机核验")
             raise ValueError("SubHD 下载页面不可访问")
         down_match = re.search(r'href=["\']([^"\']*/down/[A-Za-z0-9_-]+[^"\']*)["\']', text, re.I)
         if down_match:
@@ -291,12 +386,15 @@ class SubHDProvider(BaseSubtitleProvider):
         else:
             sid_match = re.search(r'\bdata-sid=["\']([A-Za-z0-9_-]+)["\']', text, re.I)
             if not sid_match:
+                if _is_subhd_verification_notice(text):
+                    raise HumanVerificationRequiredError("字幕站点需要人机核验")
                 raise ValueError("SubHD 未找到下载按钮")
             prepare_data = self.fetcher.post_json(
                 f"{self.root_url}/api/sub/prepare-download",
                 {"sid": sid_match.group(1)},
                 referer=page_url,
             )
+            self._check_api_verification(prepare_data)
             prepared_url = self._extract_api_download_url(prepare_data)
             if not prepare_data.get("success") or "/down/" not in prepared_url:
                 raise ValueError("SubHD 下载按钮准备失败")
@@ -305,12 +403,16 @@ class SubHDProvider(BaseSubtitleProvider):
         if not sid:
             raise ValueError("SubHD 下载按钮缺少 sid")
         down_status, down_text, down_final_url = self.fetcher.get_text(down_url, referer=page_url)
+        if down_status >= 400 and _is_subhd_verification_notice(down_text):
+            raise HumanVerificationRequiredError("字幕站点需要人机核验")
         payload = {"sid": sid, "cap": captcha_code or ""}
         api_url = f"{self.root_url}/api/sub/down"
         data = self.fetcher.post_json(api_url, payload, referer=down_url)
+        self._check_api_verification(data)
         if data.get("pass") is False and not payload["cap"]:
             payload["cap"] = SubHDSvgCaptchaSolver().solve(str(data.get("msg") or ""))
             data = self.fetcher.post_json(api_url, payload, referer=down_url)
+            self._check_api_verification(data)
         if not data.get("success"):
             raise ValueError("SubHD 下载验证码校验失败或接口未返回下载地址")
         file_url = self._extract_api_download_url(data)
@@ -336,6 +438,8 @@ class SubHDProvider(BaseSubtitleProvider):
         filename, content, final_url = self.fetcher.get_bytes(resolved_url, referer=down_url)
         if _looks_like_html_bytes(content, filename or final_url):
             text = _decode_bytes(content, filename)
+            if _is_subhd_verification_notice(text):
+                raise HumanVerificationRequiredError("字幕站点需要人机核验")
             fallback = self._download_first_valid_link(_extract_download_hrefs(text), final_url or resolved_url, resolved_url)
             if fallback:
                 return fallback

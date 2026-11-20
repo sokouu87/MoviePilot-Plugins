@@ -12,8 +12,10 @@ from app.log import logger
 
 from ..config.config_schema import host_from_url, normalize_provider_ids
 from ..online.online_subtitle import CaptchaRequiredError, build_search_keywords
+from ..online_subtitles.models import SubtitleVerificationRequiredError
 from .request_helpers import (
     filter_unlocked_target_ids,
+    enrich_targets_with_media,
     locked_target_ids_from_body,
     online_keywords,
     results_from_body,
@@ -42,7 +44,7 @@ def download_online_results_to_uploads(
             result,
         )
         try:
-            extracted = upload_session.extract_subtitle_files(
+            extracted = upload_session.extract_online_subtitle_files(
                 source_name,
                 downloaded.get("content") or b"",
                 session_dir,
@@ -56,6 +58,7 @@ def download_online_results_to_uploads(
         for item in extracted:
             item["online_source"] = downloaded.get("provider")
             item["online_title"] = result.get("title", "")
+            item["translation_source"] = result.get("translation_source", "unknown")
             if not item.get("archive_name") and source_name != item.get("source_name"):
                 item["archive_name"] = source_name
         prepared_uploads.extend(extracted)
@@ -107,6 +110,7 @@ class OnlineApi:
             raise HTTPException(status_code=400, detail="目标视频已失效，请重新选择资源")
         target_resolver = services.target_resolver()
         targets = [target_resolver.target_from_entry(item) for item in target_entries]
+        targets = enrich_targets_with_media(targets, body.get("media"))
         keywords = online_keywords(body, targets, owner._normalize_text, build_search_keywords)
         if not keywords:
             raise HTTPException(status_code=400, detail="没有可用搜索关键词，请手动输入关键词")
@@ -137,13 +141,13 @@ class OnlineApi:
             raise HTTPException(status_code=400, detail="目标视频已失效，请重新选择资源")
         target_resolver = services.target_resolver()
         targets = [target_resolver.target_from_entry(item) for item in target_entries]
+        targets = enrich_targets_with_media(targets, body.get("media"))
         keywords = online_keywords(body, targets, owner._normalize_text, build_search_keywords)
         if not keywords:
             raise HTTPException(status_code=400, detail="没有可用搜索关键词，请手动输入关键词")
         requested_providers = body.get("providers") if isinstance(body.get("providers"), list) else owner._online_provider_ids
         providers = normalize_provider_ids(
             requested_providers,
-            fallback=not isinstance(body.get("providers"), list),
             available_provider_ids=owner._available_online_provider_ids,
             default_provider_ids=owner._default_online_provider_ids,
         )
@@ -190,13 +194,13 @@ class OnlineApi:
             raise HTTPException(status_code=400, detail="目标视频已失效，请重新选择资源")
         target_resolver = services.target_resolver()
         targets = [target_resolver.target_from_entry(item) for item in target_entries]
+        targets = enrich_targets_with_media(targets, body.get("media"))
         keywords = online_keywords(body, targets, owner._normalize_text, build_search_keywords)
         if not keywords:
             raise HTTPException(status_code=400, detail="没有可用搜索关键词，请手动输入关键词")
         provider_id = owner._normalize_text(body.get("provider"))
         providers = normalize_provider_ids(
             [provider_id],
-            fallback=False,
             available_provider_ids=owner._available_online_provider_ids,
             default_provider_ids=owner._default_online_provider_ids,
         )
@@ -273,6 +277,9 @@ class OnlineApi:
                 session_dir,
                 upload_session,
             )
+        except SubtitleVerificationRequiredError as exc:
+            shutil.rmtree(session_dir, ignore_errors=True)
+            raise HTTPException(status_code=409, detail=exc.to_payload()) from exc
         except CaptchaRequiredError as exc:
             shutil.rmtree(session_dir, ignore_errors=True)
             logger.warning("[SubtitleManualUpload] 在线字幕自动仿真下载失败 provider=%s message=%s", exc.provider, exc)

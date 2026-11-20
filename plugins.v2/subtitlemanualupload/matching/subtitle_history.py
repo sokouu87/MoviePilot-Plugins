@@ -7,6 +7,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from .subtitle_formats import is_bitmap_subtitle
+
+MATCH_HISTORY_CACHE_VERSION = 3
+
 
 class SubtitleHistory:
     def __init__(
@@ -42,12 +46,20 @@ class SubtitleHistory:
         for entry in entries:
             entry_parts = [
                 owner._normalize_text(entry.get("id")),
+                owner._normalize_text(entry.get("origin")),
+                owner._normalize_text(entry.get("media_key")),
                 owner._normalize_text(entry.get("path")),
                 owner._normalize_text(entry.get("date")),
             ]
-            if include_filesystem:
-                entry_parts.append(owner._entry_filesystem_signature(entry))
             parts.append("|".join(entry_parts))
+        if include_filesystem:
+            inventory = self._subtitle_inventory or owner.services.subtitle_inventory()
+            if hasattr(inventory, "directory_signatures_for_entries"):
+                directory_signatures = inventory.directory_signatures_for_entries(entries)
+                parts.extend(
+                    f"directory|{directory}|{signature}"
+                    for directory, signature in sorted(directory_signatures.items())
+                )
         return owner._hash_text("\n".join(parts))
 
     def persist_match_history_cache(self) -> None:
@@ -56,6 +68,7 @@ class SubtitleHistory:
         loaded_at = owner._cache_loaded_at(cache.get("loaded_at"))
         validated_at = owner._cache_loaded_at(cache.get("validated_at"))
         payload = {
+            "version": MATCH_HISTORY_CACHE_VERSION,
             "loaded_at": loaded_at.isoformat(timespec="seconds") if loaded_at else "",
             "validated_at": validated_at.isoformat(timespec="seconds") if validated_at else "",
             "signature": owner._normalize_text(cache.get("signature")),
@@ -81,12 +94,15 @@ class SubtitleHistory:
             return False
         if not isinstance(payload, dict):
             return False
+        if int(payload.get("version") or 0) != MATCH_HISTORY_CACHE_VERSION:
+            return False
         loaded_at = owner._cache_loaded_at(payload.get("loaded_at"))
         validated_at = owner._cache_loaded_at(payload.get("validated_at")) or loaded_at
         items = payload.get("items")
         if not loaded_at or not isinstance(items, list):
             return False
         owner._match_history_cache = {
+            "version": MATCH_HISTORY_CACHE_VERSION,
             "loaded_at": loaded_at,
             "validated_at": validated_at,
             "signature": owner._normalize_text(payload.get("signature")),
@@ -106,6 +122,7 @@ class SubtitleHistory:
         owner = self._owner
         owner._match_history_generation = int(getattr(owner, "_match_history_generation", 0)) + 1
         owner._match_history_cache = {
+            "version": MATCH_HISTORY_CACHE_VERSION,
             "loaded_at": None,
             "validated_at": None,
             "signature": "",
@@ -200,6 +217,22 @@ class SubtitleHistory:
             setattr(owner, attribute, lock)
         return lock
 
+    def _directory_entry_signature(self, entries: List[Dict[str, Any]]) -> str:
+        owner = self._owner
+        parts = sorted(
+            "|".join(
+                [
+                    owner._normalize_text(entry.get("id")),
+                    owner._normalize_text(entry.get("origin")),
+                    owner._normalize_text(entry.get("media_key")),
+                    owner._normalize_text(entry.get("path")),
+                    owner._normalize_text(entry.get("date")),
+                ]
+            )
+            for entry in entries
+        )
+        return owner._hash_text("\n".join(parts))
+
     def start_background_match_history_refresh(self) -> bool:
         owner = self._owner
         with self._owner_lock("_match_history_refresh_lock"):
@@ -241,22 +274,66 @@ class SubtitleHistory:
             if entries is None:
                 entries = media_catalog.load_local_entries(allow_stale=True)
             generation = int(getattr(owner, "_match_history_generation", 0))
-            if hasattr(subtitle_inventory, "subtitle_files_for_targets"):
-                subtitles_by_target = subtitle_inventory.subtitle_files_for_targets(entries)
-            else:
-                subtitles_by_target = {
-                    owner._normalize_text(entry.get("id") or entry.get("path")): subtitle_inventory.subtitle_files_for_target(entry)
-                    for entry in entries
+            signature = signature or self.match_history_signature(entries, include_filesystem=True)
+            directory_signatures = (
+                subtitle_inventory.directory_signatures_for_entries(entries)
+                if hasattr(subtitle_inventory, "directory_signatures_for_entries")
+                else {}
+            )
+            entries_by_directory: Dict[str, List[Dict[str, Any]]] = {}
+            for entry in entries:
+                path_text = owner._normalize_text(entry.get("path"))
+                directory = str(Path(path_text).parent) if path_text else f"{entry.get('storage', 'local')}|{entry.get('id')}"
+                entries_by_directory.setdefault(directory, []).append(entry)
+
+            directory_cache = getattr(owner, "_match_history_directory_cache", {})
+            next_directory_cache: Dict[str, Dict[str, Any]] = {}
+            records: List[Dict[str, Any]] = []
+            for directory, directory_entries in entries_by_directory.items():
+                entry_signature = self._directory_entry_signature(directory_entries)
+                directory_signature = directory_signatures.get(directory, "")
+                cached_directory = directory_cache.get(directory)
+                if (
+                    isinstance(cached_directory, dict)
+                    and cached_directory.get("entry_signature") == entry_signature
+                    and cached_directory.get("directory_signature") == directory_signature
+                    and isinstance(cached_directory.get("records"), list)
+                ):
+                    directory_records = cached_directory["records"]
+                else:
+                    subtitles_by_target = (
+                        subtitle_inventory.subtitle_files_for_targets(directory_entries)
+                        if hasattr(subtitle_inventory, "subtitle_files_for_targets")
+                        else {
+                            owner._normalize_text(entry.get("id") or entry.get("path")): subtitle_inventory.subtitle_files_for_target(entry)
+                            for entry in directory_entries
+                        }
+                    )
+                    directory_records = []
+                    for entry in directory_entries:
+                        target_key = owner._normalize_text(entry.get("id") or entry.get("path"))
+                        subtitles = subtitles_by_target.get(target_key) or []
+                        if subtitles:
+                            directory_records.append(
+                                {
+                                    "entry": owner._json_clone(entry),
+                                    "target": target_resolver.target_from_entry(entry, subtitles=subtitles),
+                                    "subtitles": owner._json_clone(subtitles),
+                                }
+                            )
+                next_directory_cache[directory] = {
+                    "entry_signature": entry_signature,
+                    "directory_signature": directory_signature,
+                    "records": directory_records,
                 }
-            signature = signature or self.match_history_signature(entries)
+                records.extend(directory_records)
+            owner._match_history_directory_cache = next_directory_cache
 
             groups: Dict[str, Dict[str, Any]] = {}
-            for entry in entries:
-                target_key = owner._normalize_text(entry.get("id") or entry.get("path"))
-                subtitles = subtitles_by_target.get(target_key) or []
-                if not subtitles:
-                    continue
-                target = target_resolver.target_from_entry(entry, subtitles=subtitles)
+            for record in records:
+                entry = record["entry"]
+                target = record["target"]
+                subtitles = record["subtitles"]
                 key = entry.get("media_key") or entry.get("id")
                 group = groups.setdefault(
                     key,
@@ -295,6 +372,7 @@ class SubtitleHistory:
 
             now = datetime.now()
             owner._match_history_cache = {
+                "version": MATCH_HISTORY_CACHE_VERSION,
                 "loaded_at": now,
                 "validated_at": now,
                 "signature": signature,
@@ -314,7 +392,7 @@ class SubtitleHistory:
 
     def match_history_items(self, *, keyword: str = "", media_type: str = "all") -> List[Dict[str, Any]]:
         owner = self._owner
-        entries = owner.services.local_media_catalog().load_local_entries(allow_stale=True)
+        entries = owner.services.local_media_catalog().load_local_entries()
         signature = self.match_history_signature(entries, include_filesystem=True)
         cache = owner._match_history_cache or {}
         loaded_at = owner._cache_loaded_at(cache.get("loaded_at"))
@@ -401,6 +479,9 @@ class SubtitleHistory:
                 seen.add(key)
                 if not subtitle_path.is_file():
                     skipped.append({"target_id": target_id, "subtitle_path": str(subtitle_path), "reason": "外挂字幕不存在"})
+                    continue
+                if is_bitmap_subtitle(subtitle_path):
+                    skipped.append({"target_id": target_id, "subtitle_path": str(subtitle_path), "reason": "图片字幕不支持文本调轴"})
                     continue
                 try:
                     raw_bytes = subtitle_path.read_bytes()

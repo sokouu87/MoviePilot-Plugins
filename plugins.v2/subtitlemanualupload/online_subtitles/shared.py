@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import base64
+import hashlib
 import html
-import io
 import json
 import re
 import ssl
-import struct
 import time
 import urllib.error
 import urllib.request
@@ -19,20 +17,11 @@ from app.core.config import settings
 from app.log import logger
 
 from .clients import OnlinePageClient
-from .keyword_builder import _unique_keywords
+from .keyword_builder import _normalize_title_for_match, _strong_title_matches, _unique_keywords
 from .matcher import _extract_years, _normalize_imdb_tt
 from .models import HtmlLink, OnlineSubtitleResult
+from .catalog import DEFAULT_PROVIDER_ROOTS
 
-
-DEFAULT_PROVIDER_ROOTS = {
-    "subhd": "https://subhd.tv",
-    "zimuku": "https://zmk.pw",
-    "assrt": "https://2.assrt.net",
-    "opensubtitles": "https://www.opensubtitles.com",
-}
-LEGACY_PROVIDER_ROOTS = {
-    "zimuku": {"https://zimuku.org"},
-}
 DEFAULT_ASSRT_API_URL = "https://api.assrt.net"
 DEFAULT_OPENSUBTITLES_API_URL = "https://api.opensubtitles.com/api/v1"
 INTERACTIVE_DOWNLOAD_EVENT_TIMEOUT_MS = 12000
@@ -68,10 +57,9 @@ class LinkExtractor(HTMLParser):
 
 
 def _looks_like_html_bytes(content: bytes, filename: str = "") -> bool:
-    suffix = Path(filename or "").suffix.lower()
-    if suffix in {".zip", ".rar", ".srt", ".ass", ".ssa", ".sub", ".vtt", ".webvtt", ".sbv"}:
+    head = (content or b"")[:1024].lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    if head.startswith(b"<sami"):
         return False
-    head = (content or b"")[:300].lstrip().lower()
     return head.startswith(b"<!doctype html") or head.startswith(b"<html") or b"<title>" in head
 
 
@@ -87,8 +75,6 @@ def normalize_provider_roots(value: Optional[Dict[str, Any]]) -> Dict[str, str]:
     roots: Dict[str, str] = {}
     for provider_id, default_url in DEFAULT_PROVIDER_ROOTS.items():
         normalized = normalize_root_url(raw.get(provider_id), default_url)
-        if normalized in LEGACY_PROVIDER_ROOTS.get(provider_id, set()):
-            normalized = default_url
         roots[provider_id] = normalized
     return roots
 
@@ -138,7 +124,62 @@ def _extract_download_hrefs(text: str) -> List[str]:
     return _unique_keywords(hrefs)
 
 
-def _search_douban_subject(keyword: str, year: int, fetcher: OnlinePageClient) -> Dict[str, str]:
+def _douban_seasons_from_text(value: Any) -> List[int]:
+    text = str(value or "")
+    seasons: List[int] = []
+    for pattern in (
+        r"(?i)\bS0?(\d{1,2})(?:[\s._-]*E\d{1,3})?\b",
+        r"(?i)\bSeason\s*0?(\d{1,2})\b",
+        r"第\s*(\d{1,2})\s*季",
+    ):
+        seasons.extend(int(match.group(1)) for match in re.finditer(pattern, text))
+    return sorted(set(seasons))
+
+
+def _douban_target_title_aliases(targets: List[Dict[str, Any]]) -> List[str]:
+    values: List[str] = []
+    for target in targets or []:
+        if not isinstance(target, dict):
+            continue
+        for field in (
+            "title",
+            "original_title",
+            "original_name",
+            "en_title",
+            "title_en",
+            "name_en",
+            "english_title",
+        ):
+            value = str(target.get(field) or "").strip()
+            if value:
+                values.append(value)
+    aliases = _unique_keywords(values)
+    if not aliases:
+        return []
+
+    # Prefer full titles over short/acronym aliases such as "MAWS".
+    rich_aliases = []
+    for alias in aliases:
+        normalized = _normalize_title_for_match(alias)
+        words = [part for part in normalized.split() if len(part) >= 3]
+        if len(words) >= 2 or re.search(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]", normalized):
+            rich_aliases.append(alias)
+    return rich_aliases or aliases
+
+
+def _douban_candidate_matches_targets(title: str, targets: List[Dict[str, Any]]) -> bool:
+    aliases = _douban_target_title_aliases(targets)
+    if not aliases:
+        return True
+    return any(_strong_title_matches(alias, title) for alias in aliases)
+
+
+def _search_douban_subject(
+    keyword: str,
+    year: int,
+    fetcher: OnlinePageClient,
+    targets: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, str]:
     query = re.sub(r"\bS\d{1,2}(?:E\d{1,3})?\b", "", keyword or "", flags=re.I).strip()
     if not query:
         return {}
@@ -169,11 +210,35 @@ def _search_douban_subject(keyword: str, year: int, fetcher: OnlinePageClient) -
     if not candidates:
         for sid in _extract_unique_matches(r"movie\.douban\.com/subject/(\d+)", text):
             candidates.append({"douban_id": sid, "title": "", "year": ""})
+    query_seasons = set(_douban_seasons_from_text(keyword))
+    relevant: List[Dict[str, str]] = []
+    for candidate in candidates:
+        title = str(candidate.get("title") or "")
+        if targets and not _douban_candidate_matches_targets(title, targets):
+            continue
+        candidate_seasons = set(_douban_seasons_from_text(title))
+        if query_seasons and candidate_seasons and not query_seasons.intersection(candidate_seasons):
+            continue
+        relevant.append(candidate)
+
+    if targets and not relevant:
+        logger.info(
+            "[SubtitleManualUpload] 豆瓣兜底候选被身份校验拒绝 keyword=%s candidates=%s",
+            query,
+            len(candidates),
+        )
+        return {}
+
+    pool = relevant or candidates
     if year:
-        for candidate in candidates:
+        for candidate in pool:
             if str(year) == str(candidate.get("year") or ""):
                 return candidate
-    return candidates[0] if candidates else {}
+    if query_seasons:
+        for candidate in pool:
+            if query_seasons.intersection(_douban_seasons_from_text(candidate.get("title"))):
+                return candidate
+    return pool[0] if pool else {}
 
 
 def _fetch_douban_imdb_id(douban_id: str, fetcher: OnlinePageClient) -> str:
@@ -214,7 +279,7 @@ def _extract_links(text: str) -> List[HtmlLink]:
 
 
 def _stable_result_id(provider: str, value: str) -> str:
-    digest = base64.urlsafe_b64encode(value.encode("utf-8"))[:18].decode("ascii")
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
     return f"{provider}-{digest}"
 
 
@@ -239,46 +304,6 @@ def _provider_error_summary(errors: List[str], keyword_count: int) -> str:
     if keyword_count > 1:
         summary += f"（已尝试 {keyword_count} 个关键词）"
     return summary
-
-
-def _is_zimuku_security_page(text: str) -> bool:
-    return "security_verify" in (text or "") or "网站防火墙" in (text or "")
-
-
-def _clean_captcha_text(value: str) -> str:
-    return re.sub(r"[^0-9A-Za-z]", "", value or "")
-
-
-def _preprocess_zimuku_captcha(image_b64: str) -> List[str]:
-    try:
-        from PIL import Image, ImageFilter
-
-        image = Image.open(io.BytesIO(base64.b64decode(image_b64))).convert("RGB")
-        scaled = image.resize((image.width * 3, image.height * 3), Image.Resampling.LANCZOS)
-        mask = Image.new("L", scaled.size, 255)
-        source = scaled.load()
-        output = mask.load()
-        for y in range(scaled.height):
-            for x in range(scaled.width):
-                r, g, b = source[x, y]
-                # Zimuku's Yunsuo captcha uses green glyphs on a pale background.
-                output[x, y] = 0 if (g > r + 20 and g > b + 20 and g < 190) else 255
-        mask = mask.filter(ImageFilter.MedianFilter(3))
-        buffer = io.BytesIO()
-        mask.convert("RGB").save(buffer, format="PNG")
-        return [base64.b64encode(buffer.getvalue()).decode()]
-    except Exception as exc:
-        logger.warning("[SubtitleManualUpload] Zimuku 验证码图片预处理失败：%s", exc)
-        return []
-
-
-def _string_to_hex(value: str) -> str:
-    return "".join(f"{ord(char):x}" for char in value)
-
-
-def _append_raw_query_param(url: str, key: str, value: str) -> str:
-    separator = "&" if "?" in (url or "") else "?"
-    return f"{url}{separator}{quote(str(key))}={quote(str(value))}"
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]

@@ -332,26 +332,42 @@ def suggest_target(
 ) -> Optional[str]:
     if not targets:
         return None
-    if len(targets) == 1:
-        return targets[0]["id"]
 
     hint = extract_episode_hint(subtitle_info.get("source_name"))
+    if len(targets) == 1:
+        target = targets[0]
+        if hint:
+            hint_season = _default_safe_int(hint.get("season"), 0)
+            hint_episode = _default_safe_int(hint.get("episode"), 0)
+            target_season = _default_safe_int(target.get("season"), 0)
+            target_episode = _default_safe_int(target.get("episode"), 0)
+            if (
+                hint_season
+                and target_season
+                and hint_season != target_season
+            ) or (
+                hint_episode
+                and target_episode
+                and hint_episode != target_episode
+            ):
+                return None
+        return target["id"]
+
     if not hint:
         return None
 
     season = hint.get("season", 0)
     episode = hint.get("episode", 0)
-    for target in targets:
-        if target.get("season", 0) == season and target.get("episode", 0) == episode:
-            return target["id"]
+    matches = [target for target in targets if target.get("season", 0) == season and target.get("episode", 0) == episode]
+    if matches:
+        return matches[0]["id"] if len(matches) == 1 else None
 
     if season == 0:
         candidate_seasons = {target.get("season", 0) for target in targets if target.get("season", 0)}
         if len(candidate_seasons) == 1:
             only_season = next(iter(candidate_seasons))
-            for target in targets:
-                if target.get("season", 0) == only_season and target.get("episode", 0) == episode:
-                    return target["id"]
+            matches = [target for target in targets if target.get("season", 0) == only_season and target.get("episode", 0) == episode]
+            return matches[0]["id"] if len(matches) == 1 else None
     return None
 
 
@@ -361,23 +377,9 @@ def auto_fill_missing_targets(
     *,
     extract_episode_hint: EpisodeHint,
 ) -> None:
-    unresolved = [item for item in preview_items if not item.get("target_id")]
-    if not unresolved:
-        return
-    used_target_ids = {item.get("target_id") for item in preview_items if item.get("target_id")}
-    remaining_targets = [target for target in targets if target.get("id") not in used_target_ids]
-    if len(unresolved) != len(remaining_targets):
-        return
-    sorted_targets = sorted(
-        remaining_targets,
-        key=lambda item: (item.get("season", 0), item.get("episode", 0), item.get("label", "")),
-    )
-    sorted_items = sorted(
-        unresolved,
-        key=lambda item: (extract_episode_hint(item.get("source_name") or "") or {}).get("episode", 0),
-    )
-    for item, target in zip(sorted_items, sorted_targets):
-        item["target_id"] = target["id"]
+    for item in preview_items:
+        if not item.get("target_id"):
+            item["target_id"] = suggest_target(item, targets, extract_episode_hint=extract_episode_hint)
 
 
 class MediaMetadataService(_media_metadata.MediaMetadataService):

@@ -1,8 +1,19 @@
-export const onlineProviderItems = [
-  { title: 'SubHD', value: 'subhd' },
-  { title: 'Zimuku', value: 'zimuku' },
-  { title: '射手网(伪)', value: 'assrt' },
-  { title: 'OpenSubtitles', value: 'opensubtitles' },
+import providerCatalog from '../../online_subtitles/provider_catalog.json' with { type: 'json' }
+
+export const onlineProviderItems = providerCatalog.map(item => ({ title: item.name, value: item.id }))
+export const defaultOnlineProviderIds = providerCatalog.filter(item => item.default_enabled).map(item => item.id)
+
+export const onlineLanguageItems = [
+  { title: '中英', value: 'chi&eng' },
+  { title: '中日', value: 'chi&jp' },
+  { title: '中韩', value: 'chi&kr' },
+  { title: '其他双语', value: 'other_bilingual' },
+  { title: '中文', value: 'chinese' },
+  { title: '英文', value: 'english' },
+  { title: '日文', value: 'japanese' },
+  { title: '韩文', value: 'korean' },
+  { title: '其他', value: 'other' },
+  { title: '待确认', value: 'und' },
 ]
 
 export function onlineResultKey(item) {
@@ -15,16 +26,14 @@ export function providerName(providerId) {
 }
 
 export function providerPriority(providerId) {
-  if (providerId === 'subhd') return 35
-  if (providerId === 'assrt') return 30
-  if (providerId === 'zimuku') return 25
-  if (providerId === 'opensubtitles') return 20
-  return 0
+  return providerCatalog.find(item => item.id === providerId)?.priority || 0
 }
 
 export function onlineResultMeta(item) {
   const parts = []
   if (item.language) parts.push(item.language)
+  if (item.translation_source === 'site_translation') parts.push('站点翻译')
+  if (item.translation_source === 'original_upload') parts.push('原始上传')
   if (item.format) parts.push(item.format)
   if (item.season || item.episode) {
     parts.push(`S${String(item.season || 0).padStart(2, '0')}E${String(item.episode || 0).padStart(2, '0')}`)
@@ -40,36 +49,15 @@ export function isOnlineResultDownloadable(item) {
 export function onlineResultLanguageCategory(item) {
   const category = String(item?.language_category || '').toLowerCase()
   if (['chinese', 'english', 'japanese', 'korean', 'other'].includes(category)) return category
-  const text = `${item?.language || ''} ${item?.title || ''} ${item?.note || ''}`.toLowerCase()
-  if (
-    text.includes('中文')
-    || text.includes('简体')
-    || text.includes('繁体')
-    || text.includes('双语')
-    || text.includes('chinese')
-    || /(^|[\s._()\[\]-])(zh|ze|chi|chs|cht|zho)(?=$|[\s._()\[\]-])/.test(text)
-  ) return 'chinese'
-  if (
-    text.includes('英文')
-    || text.includes('english')
-    || /(^|[\s._()\[\]-])(en|eng)(?=$|[\s._()\[\]-])/.test(text)
-  ) return 'english'
-  if (
-    text.includes('日文')
-    || text.includes('日语')
-    || text.includes('japanese')
-    || /(^|[\s._()\[\]-])(ja|jpn)(?=$|[\s._()\[\]-])/.test(text)
-  ) return 'japanese'
-  if (
-    text.includes('korean')
-    || /(^|[\s._()\[\]-])(ko|kor)(?=$|[\s._()\[\]-])/.test(text)
-  ) return 'korean'
-  return 'other'
+  const filter = onlineResultLanguageFilterCategory(item)
+  if (['chi&eng', 'chi&jp', 'chi&kr', 'other_bilingual'].includes(filter)) return 'chinese'
+  return filter === 'und' ? 'other' : filter
 }
 
 export function onlineResultLanguageFilterCategory(item) {
-  const category = onlineResultLanguageCategory(item)
-  return category === 'korean' ? 'other' : category
+  const bucket = item?.language_bucket || 'und'
+  const category = { chi: 'chinese', cht: 'chinese', eng: 'english', jpn: 'japanese', kor: 'korean' }[bucket] || bucket
+  return onlineLanguageItems.some(item => item.value === category) ? category : 'und'
 }
 
 export function onlineResultLanguagePriority(item) {
