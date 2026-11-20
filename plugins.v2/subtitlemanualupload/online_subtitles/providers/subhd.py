@@ -369,8 +369,9 @@ class SubHDProvider(BaseSubtitleProvider):
 
     @staticmethod
     def _check_api_verification(data: Dict[str, Any]) -> None:
-        if (not data.get("success") or data.get("pass") is False) and any(
-            _is_subhd_verification_notice(data.get(key)) for key in ("msg", "message", "detail")
+        if data.get("turnstileRequired") is True or (
+            (not data.get("success") or data.get("pass") is False)
+            and any(_is_subhd_verification_notice(data.get(key)) for key in ("msg", "message", "detail"))
         ):
             raise HumanVerificationRequiredError("字幕站点需要人机核验")
 

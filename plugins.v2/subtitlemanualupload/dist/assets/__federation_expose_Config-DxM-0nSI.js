@@ -1,5 +1,160 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
 
+const providerCatalog = [
+	{
+		id: "subhd",
+		name: "SubHD",
+		root_url: "https://subhd.tv",
+		default_enabled: true,
+		priority: 35,
+		media_types: [
+			"movie",
+			"tv"
+		]
+	},
+	{
+		id: "assrt",
+		name: "射手网(伪)",
+		root_url: "https://2.assrt.net",
+		default_enabled: false,
+		priority: 30,
+		media_types: [
+			"movie",
+			"tv"
+		]
+	},
+	{
+		id: "opensubtitles",
+		name: "OpenSubtitles",
+		root_url: "https://www.opensubtitles.com",
+		default_enabled: false,
+		priority: 20,
+		media_types: [
+			"movie",
+			"tv"
+		]
+	},
+	{
+		id: "subtitlecat",
+		name: "SubtitleCat",
+		root_url: "https://www.subtitlecat.com",
+		default_enabled: true,
+		priority: 10,
+		media_types: [
+			"movie",
+			"tv"
+		]
+	},
+	{
+		id: "subdl",
+		name: "SubDL",
+		root_url: "https://subdl.com",
+		default_enabled: false,
+		priority: 20,
+		media_types: [
+			"movie",
+			"tv"
+		]
+	}
+];
+
+const onlineProviderItems = providerCatalog.map(item => ({ title: item.name, value: item.id }));
+const defaultOnlineProviderIds = providerCatalog.filter(item => item.default_enabled).map(item => item.id);
+
+const onlineLanguageItems = [
+  { title: '中英', value: 'chi&eng' },
+  { title: '中日', value: 'chi&jp' },
+  { title: '中韩', value: 'chi&kr' },
+  { title: '其他双语', value: 'other_bilingual' },
+  { title: '中文', value: 'chinese' },
+  { title: '英文', value: 'english' },
+  { title: '日文', value: 'japanese' },
+  { title: '韩文', value: 'korean' },
+  { title: '其他', value: 'other' },
+  { title: '待确认', value: 'und' },
+];
+
+function onlineResultKey(item) {
+  return `${item?.provider || 'unknown'}:${item?.result_id || item?.page_url || item?.title || ''}`
+}
+
+function providerName(providerId) {
+  const known = onlineProviderItems.find(item => item.value === providerId);
+  return known?.title || providerId || '未知来源'
+}
+
+function providerPriority(providerId) {
+  return providerCatalog.find(item => item.id === providerId)?.priority || 0
+}
+
+function onlineResultMeta(item) {
+  const parts = [];
+  if (item.language) parts.push(item.language);
+  if (item.translation_source === 'site_translation') parts.push('站点翻译');
+  if (item.translation_source === 'original_upload') parts.push('原始上传');
+  if (item.format) parts.push(item.format);
+  if (item.season || item.episode) {
+    parts.push(`S${String(item.season || 0).padStart(2, '0')}E${String(item.episode || 0).padStart(2, '0')}`);
+  }
+  if (item.score) parts.push(`匹配 ${item.score}`);
+  return parts.join(' · ') || '等待下载后自动匹配'
+}
+
+function isOnlineResultDownloadable(item) {
+  return item?.downloadable !== false
+}
+
+function onlineResultLanguageCategory(item) {
+  const category = String(item?.language_category || '').toLowerCase();
+  if (['chinese', 'english', 'japanese', 'korean', 'other'].includes(category)) return category
+  const filter = onlineResultLanguageFilterCategory(item);
+  if (['chi&eng', 'chi&jp', 'chi&kr', 'other_bilingual'].includes(filter)) return 'chinese'
+  return filter === 'und' ? 'other' : filter
+}
+
+function onlineResultLanguageFilterCategory(item) {
+  const bucket = item?.language_bucket || 'und';
+  const category = { chi: 'chinese', cht: 'chinese', eng: 'english', jpn: 'japanese', kor: 'korean' }[bucket] || bucket;
+  return onlineLanguageItems.some(item => item.value === category) ? category : 'und'
+}
+
+function onlineResultLanguagePriority(item) {
+  const category = onlineResultLanguageCategory(item);
+  if (category === 'chinese') return 40
+  if (category === 'english') return 30
+  if (category === 'japanese' || category === 'korean') return 20
+  return 10
+}
+
+function onlineResultIdentityPriority(item) {
+  const status = String(item?.identity_status || '').toLowerCase();
+  if (status === 'strong') return 30
+  if (status === 'weak') return 10
+  return 0
+}
+
+function isForeignOnlineResult(item) {
+  return onlineResultLanguageCategory(item) !== 'chinese'
+}
+
+function providerProgressText(state) {
+  if (state === 'searching') return '搜索中'
+  if (state === 'done') return '已完成'
+  if (state === 'timeout') return '超时'
+  if (state === 'cancelled') return '已停止'
+  if (state === 'error') return '失败'
+  return '等待'
+}
+
+function providerProgressColor(state) {
+  if (state === 'searching') return 'info'
+  if (state === 'done') return 'success'
+  if (state === 'timeout') return 'warning'
+  if (state === 'cancelled') return 'default'
+  if (state === 'error') return 'warning'
+  return 'default'
+}
+
 const _export_sfc = (sfc, props) => {
   const target = sfc.__vccOpts || sfc;
   for (const [key, val] of props) {
@@ -8,7 +163,7 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-const {createElementVNode:_createElementVNode,resolveComponent:_resolveComponent,createVNode:_createVNode,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,toDisplayString:_toDisplayString,renderList:_renderList,Fragment:_Fragment,createElementBlock:_createElementBlock,withModifiers:_withModifiers,normalizeClass:_normalizeClass} = await importShared('vue');
+const {createElementVNode:_createElementVNode,resolveComponent:_resolveComponent,createVNode:_createVNode,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,toDisplayString:_toDisplayString,renderList:_renderList,Fragment:_Fragment,createElementBlock:_createElementBlock,withModifiers:_withModifiers,normalizeClass:_normalizeClass,unref:_unref} = await importShared('vue');
 
 
 const _hoisted_1 = { class: "subtitlemanualupload-config" };
@@ -26,9 +181,43 @@ const _hoisted_9 = ["onDragover", "onDrop"];
 const _hoisted_10 = ["aria-label", "onDragstart"];
 const _hoisted_11 = { class: "language-priority-name" };
 const _hoisted_12 = ["value", "aria-label", "max", "onChange"];
-const _hoisted_13 = { class: "config-grid two-column" };
-const _hoisted_14 = { class: "config-grid two-column" };
-const _hoisted_15 = { class: "config-grid" };
+const _hoisted_13 = { class: "online-source-settings" };
+const _hoisted_14 = { class: "config-grid two-column online-source-general" };
+const _hoisted_15 = {
+  class: "provider-settings",
+  "aria-labelledby": "provider-subhd-title"
+};
+const _hoisted_16 = { class: "provider-body" };
+const _hoisted_17 = { class: "config-grid" };
+const _hoisted_18 = {
+  class: "provider-settings",
+  "aria-labelledby": "provider-subtitlecat-title"
+};
+const _hoisted_19 = { class: "provider-body" };
+const _hoisted_20 = { class: "config-grid" };
+const _hoisted_21 = {
+  class: "provider-settings",
+  "aria-labelledby": "provider-subdl-title"
+};
+const _hoisted_22 = { class: "provider-body" };
+const _hoisted_23 = { class: "config-grid" };
+const _hoisted_24 = {
+  class: "provider-settings",
+  "aria-labelledby": "provider-assrt-title"
+};
+const _hoisted_25 = { class: "provider-body" };
+const _hoisted_26 = { class: "config-grid" };
+const _hoisted_27 = { class: "config-grid two-column" };
+const _hoisted_28 = {
+  class: "provider-settings",
+  "aria-labelledby": "provider-opensubtitles-title"
+};
+const _hoisted_29 = { class: "provider-body" };
+const _hoisted_30 = { class: "config-grid" };
+const _hoisted_31 = { class: "config-grid two-column" };
+const _hoisted_32 = { class: "config-grid two-column" };
+const _hoisted_33 = { class: "config-grid two-column" };
+const _hoisted_34 = { class: "config-grid" };
 
 const {onMounted,ref} = await importShared('vue');
 
@@ -56,7 +245,7 @@ const dropTargetAutoLanguage = ref('');
 const localConfig = ref({
   enabled: false,
   show_sidebar_nav: true,
-  online_providers: ['subhd', 'zimuku'],
+  online_providers: [...defaultOnlineProviderIds],
   online_use_proxy: false,
   traditional_to_simplified: false,
   emby_refresh_after_subtitle_write: false,
@@ -77,7 +266,8 @@ const localConfig = ref({
   timeline_vad_mode: 'webrtc',
   timeline_allow_risky_offset: false,
   subhd_url: 'https://subhd.tv',
-  zimuku_url: 'https://zmk.pw',
+  subdl_api_key: '',
+  subtitlecat_include_translations: false,
   assrt_url: 'https://2.assrt.net',
   assrt_api_key: '',
   assrt_api_url: 'https://api.assrt.net',
@@ -91,12 +281,6 @@ const localConfig = ref({
   rar_tool_path: '/usr/bin/unar',
 });
 
-const onlineProviderItems = [
-  { title: 'SubHD 中文字幕', value: 'subhd' },
-  { title: 'Zimuku 中文字幕', value: 'zimuku' },
-  { title: '射手网(伪，需 API Key)', value: 'assrt' },
-  { title: 'OpenSubtitles 多语言字幕', value: 'opensubtitles' },
-];
 
 const rarDependencyModes = [
   { title: '不处理，仅检测', value: 'none' },
@@ -151,9 +335,9 @@ const timelineVadItems = [
 ];
 
 function normalizeProviders(value) {
-  const allowed = ['subhd', 'zimuku', 'assrt', 'opensubtitles'];
+  const allowed = onlineProviderItems.map(item => item.value);
   const providers = Array.isArray(value) ? value.filter(item => allowed.includes(item)) : [];
-  return providers.length ? Array.from(new Set(providers)) : ['subhd', 'zimuku']
+  return Array.isArray(value) ? Array.from(new Set(providers)) : [...defaultOnlineProviderIds]
 }
 
 function normalizeRootUrl(value, fallback) {
@@ -161,10 +345,6 @@ function normalizeRootUrl(value, fallback) {
   return /^https?:\/\//i.test(text) ? text : fallback
 }
 
-function normalizeZimukuRootUrl(value) {
-  const normalized = normalizeRootUrl(value, 'https://zmk.pw');
-  return normalized === 'https://zimuku.org' ? 'https://zmk.pw' : normalized
-}
 
 function normalizePositiveNumber(value, fallback) {
   const number = Number(value);
@@ -257,17 +437,6 @@ function dropAutoLanguage(language, event) {
   finishDraggingAutoLanguage();
 }
 
-function normalizeMultilinePaths(value) {
-  const raw = Array.isArray(value) ? value : String(value || '').split(/\r?\n/);
-  const paths = [];
-  raw.forEach(item => {
-    const path = String(item || '').trim().replace(/[\\/]+$/, '');
-    if (!path || paths.includes(path)) return
-    paths.push(path);
-  });
-  return paths.join('\n')
-}
-
 function normalizeConfig(input) {
   const assrtApiKey = String(input?.assrt_api_key || '').trim();
   const opensubtitlesApiKey = String(input?.opensubtitles_api_key || '').trim();
@@ -275,12 +444,6 @@ function normalizeConfig(input) {
   const opensubtitlesPassword = String(input?.opensubtitles_password || '').trim();
   const providers = normalizeProviders(input?.online_providers);
   const autoStrategy = normalizeAutoStrategy(input?.auto_transfer_subtitle_strategy);
-  if (assrtApiKey && !providers.includes('assrt')) {
-    providers.push('assrt');
-  }
-  if (opensubtitlesApiKey && !providers.includes('opensubtitles')) {
-    providers.push('opensubtitles');
-  }
   return {
     enabled: Boolean(input?.enabled),
     show_sidebar_nav: input?.show_sidebar_nav !== false,
@@ -294,7 +457,9 @@ function normalizeConfig(input) {
     auto_transfer_subtitle_strategy: autoStrategy,
     trust_transfer_history_paths: Boolean(input?.trust_transfer_history_paths),
     manual_strm_enabled: Boolean(input?.manual_strm_enabled),
-    manual_strm_paths: normalizeMultilinePaths(input?.manual_strm_paths),
+    manual_strm_paths: Array.isArray(input?.manual_strm_paths)
+      ? input.manual_strm_paths.join('\n')
+      : String(input?.manual_strm_paths || ''),
     auto_search_on_manual_strm: Boolean(input?.auto_search_on_manual_strm),
     auto_multi_subtitle_mode: autoMultiSubtitleModes.some(item => item.value === input?.auto_multi_subtitle_mode)
       ? input.auto_multi_subtitle_mode
@@ -312,7 +477,8 @@ function normalizeConfig(input) {
     timeline_vad_mode: timelineVadItems.some(item => item.value === input?.timeline_vad_mode) ? input.timeline_vad_mode : 'webrtc',
     timeline_allow_risky_offset: Boolean(input?.timeline_allow_risky_offset),
     subhd_url: normalizeRootUrl(input?.subhd_url, 'https://subhd.tv'),
-    zimuku_url: normalizeZimukuRootUrl(input?.zimuku_url),
+    subdl_api_key: String(input?.subdl_api_key || '').trim(),
+    subtitlecat_include_translations: Boolean(input?.subtitlecat_include_translations),
     assrt_url: normalizeRootUrl(input?.assrt_url, 'https://2.assrt.net'),
     assrt_api_key: assrtApiKey,
     assrt_api_url: normalizeRootUrl(input?.assrt_api_url, 'https://api.assrt.net'),
@@ -368,7 +534,7 @@ return (_ctx, _cache) => {
         color: "transparent"
       }, {
         default: _withCtx(() => [
-          _cache[37] || (_cache[37] = _createElementVNode("div", {
+          _cache[38] || (_cache[38] = _createElementVNode("div", {
             class: "text-subtitle-1 ms-3 config-toolbar-title",
             title: "海拉鲁字幕大师配置"
           }, "海拉鲁字幕大师配置", -1)),
@@ -382,7 +548,7 @@ return (_ctx, _cache) => {
             color: "primary",
             class: "me-2"
           }, {
-            default: _withCtx(() => [...(_cache[36] || (_cache[36] = [
+            default: _withCtx(() => [...(_cache[37] || (_cache[37] = [
               _createTextVNode(" 使用教程 ", -1)
             ]))]),
             _: 1
@@ -426,7 +592,7 @@ return (_ctx, _cache) => {
                     text: configError.value
                   }, null, 8, ["text"]))
                 : _createCommentVNode("", true),
-              _cache[39] || (_cache[39] = _createElementVNode("div", { class: "config-section" }, [
+              _cache[48] || (_cache[48] = _createElementVNode("div", { class: "config-section" }, [
                 _createElementVNode("div", { class: "config-section-title" }, "基础设置")
               ], -1)),
               _createElementVNode("div", _hoisted_4, [
@@ -550,14 +716,14 @@ return (_ctx, _cache) => {
                   density: "comfortable",
                   multiple: "",
                   chips: "",
-                  hint: "勾选需要的语言，展开“调整语言顺序”设置优先级。",
+                  hint: "选了双语，已有字幕须满足所选双语之一，否则补充搜索；多选按顺序优先，找不到时不回退单语或 AI。",
                   "persistent-hint": ""
                 }, null, 8, ["modelValue"]),
                 (localConfig.value.auto_subtitle_language_priority.length)
                   ? (_openBlock(), _createElementBlock("details", _hoisted_5, [
                       _createElementVNode("summary", null, [
                         _createElementVNode("span", _hoisted_6, [
-                          _cache[38] || (_cache[38] = _createElementVNode("span", null, "调整语言顺序", -1)),
+                          _cache[39] || (_cache[39] = _createElementVNode("span", null, "调整语言顺序", -1)),
                           _createElementVNode("span", _hoisted_7, _toDisplayString(localConfig.value.auto_subtitle_language_priority.length) + " 项已选，序号 1 优先 ", 1)
                         ]),
                         _createVNode(_component_v_icon, {
@@ -611,7 +777,7 @@ return (_ctx, _cache) => {
                   "onUpdate:modelValue": _cache[15] || (_cache[15] = $event => ((localConfig.value.auto_subtitle_language_strict) = $event)),
                   label: "仅接受所选语言",
                   color: "info",
-                  hint: "无匹配时跳过，不自动回退或提交 AI 翻译",
+                  hint: "未选择双语时，开启此项才限制为所选语言；无匹配不回退或提交 AI 翻译。双语要求始终生效。",
                   "persistent-hint": ""
                 }, null, 8, ["modelValue"]),
                 _createVNode(_component_VSelect, {
@@ -635,153 +801,226 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               _createVNode(_component_VDivider, { class: "my-5" }),
-              _cache[40] || (_cache[40] = _createElementVNode("div", { class: "config-section" }, [
+              _cache[49] || (_cache[49] = _createElementVNode("div", { class: "config-section" }, [
                 _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "config-section-title" }, "在线字幕搜索"),
-                  _createElementVNode("p", null, "自动搜索支持 SubHD、Zimuku、射手网(伪) 和 OpenSubtitles；站点波动时仍可使用右侧手动搜索跳转。")
+                  _createElementVNode("p", null, "先选择启用的字幕源，再填写对应平台的设置。站点暂时不可用时，可在搜索页手动跳转。")
                 ])
               ], -1)),
               _createElementVNode("div", _hoisted_13, [
-                _createVNode(_component_VSelect, {
-                  modelValue: localConfig.value.online_providers,
-                  "onUpdate:modelValue": _cache[18] || (_cache[18] = $event => ((localConfig.value.online_providers) = $event)),
-                  items: onlineProviderItems,
-                  label: "启用字幕源",
-                  variant: "outlined",
-                  density: "comfortable",
-                  multiple: "",
-                  chips: "",
-                  "hide-details": ""
-                }, null, 8, ["modelValue"]),
-                _createVNode(_component_VSelect, {
-                  modelValue: localConfig.value.online_use_proxy,
-                  "onUpdate:modelValue": _cache[19] || (_cache[19] = $event => ((localConfig.value.online_use_proxy) = $event)),
-                  items: [
-                { title: '不使用系统代理', value: false },
-                { title: '使用 MoviePilot 系统代理', value: true },
-              ],
-                  label: "API 请求代理",
-                  variant: "outlined",
-                  density: "comfortable",
-                  "hide-details": ""
-                }, null, 8, ["modelValue"]),
-                _createVNode(_component_VTextField, {
-                  modelValue: localConfig.value.subhd_url,
-                  "onUpdate:modelValue": _cache[20] || (_cache[20] = $event => ((localConfig.value.subhd_url) = $event)),
-                  label: "SubHD 站点地址",
-                  placeholder: "https://subhd.tv",
-                  variant: "outlined",
-                  density: "comfortable",
-                  "hide-details": ""
-                }, null, 8, ["modelValue"]),
-                _createVNode(_component_VTextField, {
-                  modelValue: localConfig.value.zimuku_url,
-                  "onUpdate:modelValue": _cache[21] || (_cache[21] = $event => ((localConfig.value.zimuku_url) = $event)),
-                  label: "Zimuku 站点地址",
-                  placeholder: "https://zmk.pw",
-                  variant: "outlined",
-                  density: "comfortable",
-                  "hide-details": ""
-                }, null, 8, ["modelValue"]),
-                _createVNode(_component_VTextField, {
-                  modelValue: localConfig.value.assrt_url,
-                  "onUpdate:modelValue": _cache[22] || (_cache[22] = $event => ((localConfig.value.assrt_url) = $event)),
-                  label: "射手网(伪) 手动搜索地址",
-                  placeholder: "https://2.assrt.net",
-                  variant: "outlined",
-                  density: "comfortable",
-                  "hide-details": ""
-                }, null, 8, ["modelValue"]),
-                _createVNode(_component_VTextField, {
-                  modelValue: localConfig.value.assrt_api_url,
-                  "onUpdate:modelValue": _cache[23] || (_cache[23] = $event => ((localConfig.value.assrt_api_url) = $event)),
-                  label: "射手网(伪) API 地址",
-                  placeholder: "https://api.assrt.net",
-                  variant: "outlined",
-                  density: "comfortable",
-                  "hide-details": ""
-                }, null, 8, ["modelValue"]),
-                _createVNode(_component_VTextField, {
-                  modelValue: localConfig.value.assrt_api_key,
-                  "onUpdate:modelValue": _cache[24] || (_cache[24] = $event => ((localConfig.value.assrt_api_key) = $event)),
-                  label: "射手网(伪) API Key",
-                  placeholder: "未填写时默认不启用伪射手自动搜索",
-                  variant: "outlined",
-                  density: "comfortable",
-                  type: "password",
-                  autocomplete: "new-password",
-                  "hide-details": ""
-                }, null, 8, ["modelValue"]),
-                _createVNode(_component_VTextField, {
-                  modelValue: localConfig.value.opensubtitles_url,
-                  "onUpdate:modelValue": _cache[25] || (_cache[25] = $event => ((localConfig.value.opensubtitles_url) = $event)),
-                  label: "OpenSubtitles 手动搜索地址",
-                  placeholder: "https://www.opensubtitles.com",
-                  variant: "outlined",
-                  density: "comfortable",
-                  "hide-details": ""
-                }, null, 8, ["modelValue"]),
-                _createVNode(_component_VTextField, {
-                  modelValue: localConfig.value.opensubtitles_api_url,
-                  "onUpdate:modelValue": _cache[26] || (_cache[26] = $event => ((localConfig.value.opensubtitles_api_url) = $event)),
-                  label: "OpenSubtitles API 地址",
-                  placeholder: "https://api.opensubtitles.com/api/v1",
-                  variant: "outlined",
-                  density: "comfortable",
-                  "hide-details": ""
-                }, null, 8, ["modelValue"]),
-                _createVNode(_component_VTextField, {
-                  modelValue: localConfig.value.opensubtitles_api_key,
-                  "onUpdate:modelValue": _cache[27] || (_cache[27] = $event => ((localConfig.value.opensubtitles_api_key) = $event)),
-                  label: "OpenSubtitles API Key",
-                  placeholder: "用于搜索多语言字幕",
-                  variant: "outlined",
-                  density: "comfortable",
-                  type: "password",
-                  autocomplete: "new-password",
-                  "hide-details": ""
-                }, null, 8, ["modelValue"]),
-                _createVNode(_component_VTextField, {
-                  modelValue: localConfig.value.opensubtitles_username,
-                  "onUpdate:modelValue": _cache[28] || (_cache[28] = $event => ((localConfig.value.opensubtitles_username) = $event)),
-                  label: "OpenSubtitles 用户名（可选）",
-                  placeholder: "下载时用于后台登录换取 token",
-                  variant: "outlined",
-                  density: "comfortable",
-                  autocomplete: "username",
-                  error: localConfig.value.opensubtitles_username.includes('@'),
-                  "error-messages": localConfig.value.opensubtitles_username.includes('@') ? '请输入用户名而非邮箱！' : ''
-                }, null, 8, ["modelValue", "error", "error-messages"]),
-                _createVNode(_component_VTextField, {
-                  modelValue: localConfig.value.opensubtitles_password,
-                  "onUpdate:modelValue": _cache[29] || (_cache[29] = $event => ((localConfig.value.opensubtitles_password) = $event)),
-                  label: "OpenSubtitles 密码（可选）",
-                  placeholder: "下载时用于后台登录换取 token",
-                  variant: "outlined",
-                  density: "comfortable",
-                  type: "password",
-                  autocomplete: "new-password",
-                  "hide-details": ""
-                }, null, 8, ["modelValue"])
+                _createElementVNode("div", _hoisted_14, [
+                  _createVNode(_component_VSelect, {
+                    modelValue: localConfig.value.online_providers,
+                    "onUpdate:modelValue": _cache[18] || (_cache[18] = $event => ((localConfig.value.online_providers) = $event)),
+                    items: _unref(onlineProviderItems),
+                    label: "启用字幕源",
+                    variant: "outlined",
+                    density: "comfortable",
+                    multiple: "",
+                    chips: "",
+                    "hide-details": ""
+                  }, null, 8, ["modelValue", "items"]),
+                  _createVNode(_component_VSelect, {
+                    modelValue: localConfig.value.online_use_proxy,
+                    "onUpdate:modelValue": _cache[19] || (_cache[19] = $event => ((localConfig.value.online_use_proxy) = $event)),
+                    items: [
+                  { title: '不使用系统代理', value: false },
+                  { title: '使用 MoviePilot 系统代理', value: true },
+                ],
+                    label: "API 请求代理",
+                    variant: "outlined",
+                    density: "comfortable",
+                    "hide-details": ""
+                  }, null, 8, ["modelValue"])
+                ]),
+                _cache[47] || (_cache[47] = _createElementVNode("p", { class: "provider-note online-source-help" }, "填写密钥后，仍需在上方“启用字幕源”中勾选对应平台，并保存设置。", -1)),
+                _createElementVNode("section", _hoisted_15, [
+                  _cache[40] || (_cache[40] = _createElementVNode("div", { class: "provider-heading" }, [
+                    _createElementVNode("h3", { id: "provider-subhd-title" }, "SubHD"),
+                    _createElementVNode("p", null, "无需 API Key")
+                  ], -1)),
+                  _createElementVNode("div", _hoisted_16, [
+                    _createElementVNode("div", _hoisted_17, [
+                      _createVNode(_component_VTextField, {
+                        modelValue: localConfig.value.subhd_url,
+                        "onUpdate:modelValue": _cache[20] || (_cache[20] = $event => ((localConfig.value.subhd_url) = $event)),
+                        label: "SubHD 站点地址",
+                        placeholder: "https://subhd.tv",
+                        variant: "outlined",
+                        density: "comfortable",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"])
+                    ])
+                  ])
+                ]),
+                _createElementVNode("section", _hoisted_18, [
+                  _cache[41] || (_cache[41] = _createElementVNode("div", { class: "provider-heading" }, [
+                    _createElementVNode("h3", { id: "provider-subtitlecat-title" }, "SubtitleCat"),
+                    _createElementVNode("p", null, "无需 API Key")
+                  ], -1)),
+                  _createElementVNode("div", _hoisted_19, [
+                    _createElementVNode("div", _hoisted_20, [
+                      _createVNode(_component_VSwitch, {
+                        modelValue: localConfig.value.subtitlecat_include_translations,
+                        "onUpdate:modelValue": _cache[21] || (_cache[21] = $event => ((localConfig.value.subtitlecat_include_translations) = $event)),
+                        label: "接受已有中文站点翻译",
+                        hint: "默认只搜索原字幕；开启后另列站点翻译，不会发起在线翻译任务。",
+                        "persistent-hint": "",
+                        color: "primary"
+                      }, null, 8, ["modelValue"])
+                    ])
+                  ])
+                ]),
+                _createElementVNode("section", _hoisted_21, [
+                  _cache[43] || (_cache[43] = _createElementVNode("div", { class: "provider-heading" }, [
+                    _createElementVNode("h3", { id: "provider-subdl-title" }, "SubDL"),
+                    _createElementVNode("p", null, "需要 API Key")
+                  ], -1)),
+                  _createElementVNode("div", _hoisted_22, [
+                    _createElementVNode("div", _hoisted_23, [
+                      _createVNode(_component_VTextField, {
+                        modelValue: localConfig.value.subdl_api_key,
+                        "onUpdate:modelValue": _cache[22] || (_cache[22] = $event => ((localConfig.value.subdl_api_key) = $event)),
+                        label: "SubDL API Key",
+                        placeholder: "粘贴从 SubDL 账户获取的密钥",
+                        type: "password",
+                        autocomplete: "new-password",
+                        variant: "outlined",
+                        density: "comfortable",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"])
+                    ]),
+                    _cache[42] || (_cache[42] = _createElementVNode("p", { class: "provider-note" }, [
+                      _createElementVNode("a", {
+                        href: "https://subdl.com/panel/api",
+                        target: "_blank",
+                        rel: "noopener noreferrer",
+                        class: "provider-help-link"
+                      }, "获取 API Key ↗"),
+                      _createElementVNode("span", null, "注册或登录 SubDL 后，在 API 管理页获取密钥。")
+                    ], -1))
+                  ])
+                ]),
+                _createElementVNode("section", _hoisted_24, [
+                  _cache[44] || (_cache[44] = _createElementVNode("div", { class: "provider-heading" }, [
+                    _createElementVNode("h3", { id: "provider-assrt-title" }, "射手网（伪） / ASSRT"),
+                    _createElementVNode("p", null, "需要 API Key")
+                  ], -1)),
+                  _createElementVNode("div", _hoisted_25, [
+                    _createElementVNode("div", _hoisted_26, [
+                      _createVNode(_component_VTextField, {
+                        modelValue: localConfig.value.assrt_api_key,
+                        "onUpdate:modelValue": _cache[23] || (_cache[23] = $event => ((localConfig.value.assrt_api_key) = $event)),
+                        label: "射手网(伪) API Key",
+                        placeholder: "未填写时默认不启用伪射手自动搜索",
+                        variant: "outlined",
+                        density: "comfortable",
+                        type: "password",
+                        autocomplete: "new-password",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"])
+                    ]),
+                    _createElementVNode("div", _hoisted_27, [
+                      _createVNode(_component_VTextField, {
+                        modelValue: localConfig.value.assrt_api_url,
+                        "onUpdate:modelValue": _cache[24] || (_cache[24] = $event => ((localConfig.value.assrt_api_url) = $event)),
+                        label: "射手网(伪) API 地址",
+                        placeholder: "https://api.assrt.net",
+                        variant: "outlined",
+                        density: "comfortable",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"]),
+                      _createVNode(_component_VTextField, {
+                        modelValue: localConfig.value.assrt_url,
+                        "onUpdate:modelValue": _cache[25] || (_cache[25] = $event => ((localConfig.value.assrt_url) = $event)),
+                        label: "射手网(伪) 手动搜索地址",
+                        placeholder: "https://2.assrt.net",
+                        variant: "outlined",
+                        density: "comfortable",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"])
+                    ])
+                  ])
+                ]),
+                _createElementVNode("section", _hoisted_28, [
+                  _cache[46] || (_cache[46] = _createElementVNode("div", { class: "provider-heading" }, [
+                    _createElementVNode("h3", { id: "provider-opensubtitles-title" }, "OpenSubtitles"),
+                    _createElementVNode("p", null, "搜索需要 API Key；下载需账号")
+                  ], -1)),
+                  _createElementVNode("div", _hoisted_29, [
+                    _createElementVNode("div", _hoisted_30, [
+                      _createVNode(_component_VTextField, {
+                        modelValue: localConfig.value.opensubtitles_api_key,
+                        "onUpdate:modelValue": _cache[26] || (_cache[26] = $event => ((localConfig.value.opensubtitles_api_key) = $event)),
+                        label: "OpenSubtitles API Key",
+                        placeholder: "用于搜索多语言字幕",
+                        variant: "outlined",
+                        density: "comfortable",
+                        type: "password",
+                        autocomplete: "new-password",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"])
+                    ]),
+                    _createElementVNode("div", _hoisted_31, [
+                      _createVNode(_component_VTextField, {
+                        modelValue: localConfig.value.opensubtitles_username,
+                        "onUpdate:modelValue": _cache[27] || (_cache[27] = $event => ((localConfig.value.opensubtitles_username) = $event)),
+                        label: "OpenSubtitles 用户名（可选）",
+                        placeholder: "下载时用于后台登录换取 token",
+                        variant: "outlined",
+                        density: "comfortable",
+                        autocomplete: "username",
+                        "hide-details": "auto",
+                        error: localConfig.value.opensubtitles_username.includes('@'),
+                        "error-messages": localConfig.value.opensubtitles_username.includes('@') ? '请输入用户名而非邮箱！' : ''
+                      }, null, 8, ["modelValue", "error", "error-messages"]),
+                      _createVNode(_component_VTextField, {
+                        modelValue: localConfig.value.opensubtitles_password,
+                        "onUpdate:modelValue": _cache[28] || (_cache[28] = $event => ((localConfig.value.opensubtitles_password) = $event)),
+                        label: "OpenSubtitles 密码（可选）",
+                        placeholder: "下载时用于后台登录换取 token",
+                        variant: "outlined",
+                        density: "comfortable",
+                        type: "password",
+                        autocomplete: "new-password",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"])
+                    ]),
+                    _createElementVNode("div", _hoisted_32, [
+                      _createVNode(_component_VTextField, {
+                        modelValue: localConfig.value.opensubtitles_api_url,
+                        "onUpdate:modelValue": _cache[29] || (_cache[29] = $event => ((localConfig.value.opensubtitles_api_url) = $event)),
+                        label: "OpenSubtitles API 地址",
+                        placeholder: "https://api.opensubtitles.com/api/v1",
+                        variant: "outlined",
+                        density: "comfortable",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"]),
+                      _createVNode(_component_VTextField, {
+                        modelValue: localConfig.value.opensubtitles_url,
+                        "onUpdate:modelValue": _cache[30] || (_cache[30] = $event => ((localConfig.value.opensubtitles_url) = $event)),
+                        label: "OpenSubtitles 手动搜索地址",
+                        placeholder: "https://www.opensubtitles.com",
+                        variant: "outlined",
+                        density: "comfortable",
+                        "hide-details": ""
+                      }, null, 8, ["modelValue"])
+                    ]),
+                    _cache[45] || (_cache[45] = _createElementVNode("p", { class: "provider-note" }, "下载时使用用户名和密码登录。下载后的英文字幕，可提交给 AI 字幕生成翻译。", -1))
+                  ])
+                ])
               ]),
-              _createVNode(_component_VAlert, {
-                class: "mt-4",
-                type: "info",
-                variant: "tonal",
-                density: "compact",
-                text: "OpenSubtitles 搜索需要 API Key；下载由插件使用用户名和密码后台登录换取 token。英文字幕结果可下载后提交给 AI 字幕生成翻译。"
-              }),
               _createVNode(_component_VDivider, { class: "my-5" }),
-              _cache[41] || (_cache[41] = _createElementVNode("div", { class: "config-section" }, [
+              _cache[50] || (_cache[50] = _createElementVNode("div", { class: "config-section" }, [
                 _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "config-section-title" }, "智能调轴"),
                   _createElementVNode("p", null, "控制写入前可接受的全局偏移范围；超过 120 秒通常意味着错集、错版本或整季包映射错误。")
                 ])
               ], -1)),
-              _createElementVNode("div", _hoisted_14, [
+              _createElementVNode("div", _hoisted_33, [
                 _createVNode(_component_VTextField, {
                   modelValue: localConfig.value.timeline_max_offset_seconds,
-                  "onUpdate:modelValue": _cache[30] || (_cache[30] = $event => ((localConfig.value.timeline_max_offset_seconds) = $event)),
+                  "onUpdate:modelValue": _cache[31] || (_cache[31] = $event => ((localConfig.value.timeline_max_offset_seconds) = $event)),
                   modelModifiers: { number: true },
                   label: "智能调轴最大偏移秒数",
                   type: "number",
@@ -795,7 +1034,7 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"]),
                 _createVNode(_component_VTextField, {
                   modelValue: localConfig.value.timeline_min_offset_seconds,
-                  "onUpdate:modelValue": _cache[31] || (_cache[31] = $event => ((localConfig.value.timeline_min_offset_seconds) = $event)),
+                  "onUpdate:modelValue": _cache[32] || (_cache[32] = $event => ((localConfig.value.timeline_min_offset_seconds) = $event)),
                   modelModifiers: { number: true },
                   label: "最小应用阈值",
                   type: "number",
@@ -809,7 +1048,7 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"]),
                 _createVNode(_component_VSelect, {
                   modelValue: localConfig.value.timeline_vad_mode,
-                  "onUpdate:modelValue": _cache[32] || (_cache[32] = $event => ((localConfig.value.timeline_vad_mode) = $event)),
+                  "onUpdate:modelValue": _cache[33] || (_cache[33] = $event => ((localConfig.value.timeline_vad_mode) = $event)),
                   items: timelineVadItems,
                   label: "音频 VAD 模式",
                   variant: "outlined",
@@ -818,7 +1057,7 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"]),
                 _createVNode(_component_VSwitch, {
                   modelValue: localConfig.value.timeline_allow_risky_offset,
-                  "onUpdate:modelValue": _cache[33] || (_cache[33] = $event => ((localConfig.value.timeline_allow_risky_offset) = $event)),
+                  "onUpdate:modelValue": _cache[34] || (_cache[34] = $event => ((localConfig.value.timeline_allow_risky_offset) = $event)),
                   label: "全局允许高风险偏移",
                   color: "warning",
                   hint: "不建议开启。开启后后端会允许 120 秒以上结果；手动操作仍会显示风险确认。",
@@ -826,7 +1065,7 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               _createVNode(_component_VDivider, { class: "my-5" }),
-              _cache[42] || (_cache[42] = _createElementVNode("div", { class: "config-section" }, [
+              _cache[51] || (_cache[51] = _createElementVNode("div", { class: "config-section" }, [
                 _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "config-section-title" }, "RAR / 7Z 解压器"),
                   _createElementVNode("p", null, [
@@ -836,10 +1075,10 @@ return (_ctx, _cache) => {
                   ])
                 ])
               ], -1)),
-              _createElementVNode("div", _hoisted_15, [
+              _createElementVNode("div", _hoisted_34, [
                 _createVNode(_component_VSelect, {
                   modelValue: localConfig.value.rar_dependency_mode,
-                  "onUpdate:modelValue": _cache[34] || (_cache[34] = $event => ((localConfig.value.rar_dependency_mode) = $event)),
+                  "onUpdate:modelValue": _cache[35] || (_cache[35] = $event => ((localConfig.value.rar_dependency_mode) = $event)),
                   items: rarDependencyModes,
                   label: "压缩包解压器处理方式",
                   variant: "outlined",
@@ -848,7 +1087,7 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"]),
                 _createVNode(_component_VTextField, {
                   modelValue: localConfig.value.rar_tool_path,
-                  "onUpdate:modelValue": _cache[35] || (_cache[35] = $event => ((localConfig.value.rar_tool_path) = $event)),
+                  "onUpdate:modelValue": _cache[36] || (_cache[36] = $event => ((localConfig.value.rar_tool_path) = $event)),
                   label: "容器内映射路径",
                   placeholder: "/usr/bin/unar",
                   variant: "outlined",
@@ -874,6 +1113,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-22de2a31"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-01616758"]]);
 
-export { _export_sfc as _, Config as default };
+export { _export_sfc as _, onlineLanguageItems as a, onlineProviderItems as b, onlineResultKey as c, defaultOnlineProviderIds as d, Config as default, isForeignOnlineResult as e, providerPriority as f, onlineResultLanguagePriority as g, onlineResultIdentityPriority as h, isOnlineResultDownloadable as i, onlineResultMeta as j, providerProgressText as k, providerProgressColor as l, onlineResultLanguageFilterCategory as o, providerName as p };

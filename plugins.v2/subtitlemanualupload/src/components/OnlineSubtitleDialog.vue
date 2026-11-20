@@ -14,6 +14,7 @@ defineProps({
   onlineProviderItems: { type: Array, default: () => [] },
   onlineSearching: { type: Boolean, default: false },
   onlineError: { type: String, default: '' },
+  onlineVerification: { type: Object, default: null },
   onlineMessages: { type: Array, default: () => [] },
   onlineMessagesCollapsed: { type: Boolean, default: false },
   onlineMessageType: { type: String, default: 'info' },
@@ -47,6 +48,7 @@ defineEmits([
   'update:onlineProviderFilter',
   'update:onlineAiConfirmDialog',
   'download-online-preview',
+  'upload-verified-subtitle',
   'request-online-ai-translate',
   'stop-online-download',
   'close-online-dialog',
@@ -161,7 +163,28 @@ defineEmits([
       <VDivider />
       <VCardText>
         <VAlert
-          v-if="onlineError"
+          v-if="onlineVerification"
+          class="mb-4"
+          type="warning"
+          variant="tonal"
+        >
+          <p>SubHD 要求人机验证。验证并下载后，可以上传到当前选中的目标。</p>
+          <div class="d-flex flex-wrap ga-2">
+            <VBtn
+              :href="onlineVerification.pageUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              variant="tonal"
+            >
+              去 SubHD 验证并下载
+            </VBtn>
+            <VBtn color="primary" variant="tonal" @click="$emit('upload-verified-subtitle')">
+              上传已下载文件
+            </VBtn>
+          </div>
+        </VAlert>
+        <VAlert
+          v-else-if="onlineError"
           class="mb-4"
           type="error"
           variant="tonal"

@@ -296,6 +296,7 @@ const {
   clearUploadPreviewState,
   prepareOnlineUploadState,
   openOnlinePreview,
+  openUploadDialog,
   openBatchUpload,
   openSingleUpload,
   onPickFiles,
@@ -439,6 +440,7 @@ const {
   onlinePreviewDownloading,
   onlineAiDownloading,
   onlineError,
+  onlineVerification,
   onlineDialog,
   onlineAiConfirmDialog,
   onlineTitle,
@@ -474,6 +476,7 @@ const {
   requestOnlineAiTranslate,
   confirmOnlineAiTranslate,
   downloadOnlinePreview,
+  uploadVerifiedSubtitle,
   stopOnlineDownload,
 } = useOnlineSubtitles({
   pluginApi,
@@ -493,6 +496,7 @@ const {
   confirmRiskyTimelineOffset,
   prepareOnlineUploadState,
   openOnlinePreview,
+  openUploadDialog,
   closeUploadDialog() {
     preview.value = null
     uploadDialog.value = false
@@ -1158,6 +1162,7 @@ defineExpose({
       :online-provider-items="onlineProviderItems"
       :online-searching="onlineSearching"
       :online-error="onlineError"
+      :online-verification="onlineVerification"
       :online-messages="onlineMessages"
       :online-message-type="onlineMessageType"
       :online-message-summary="onlineMessageSummary"
@@ -1178,6 +1183,7 @@ defineExpose({
       :is-online-result-downloadable="isOnlineResultDownloadable"
       @update:model-value="updateOnlineDialog"
       @download-online-preview="downloadOnlinePreview"
+      @upload-verified-subtitle="uploadVerifiedSubtitle"
       @request-online-ai-translate="requestOnlineAiTranslate"
       @stop-online-download="stopOnlineDownload"
       @close-online-dialog="closeOnlineDialog"

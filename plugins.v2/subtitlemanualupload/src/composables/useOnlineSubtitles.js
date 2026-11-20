@@ -16,6 +16,21 @@ import {
 const ONLINE_PROVIDER_TIMEOUT_MS = 25000
 const ONLINE_DOWNLOAD_TIMEOUT_MS = 35000
 
+function subhdVerification(error, results) {
+  const body = error?.response?.data ?? error?.data ?? error
+  const detail = body?.detail ?? body
+  if (detail?.code !== 'subtitle_verification_required' || detail.provider !== 'subhd') return null
+  const result = results.find(item => item.provider === 'subhd' && item.result_id === detail.result_id)
+  if (!result || !detail.page_url) return null
+  try {
+    const url = new URL(detail.page_url)
+    if (url.protocol !== 'https:' || url.username || url.password) return null
+    return { pageUrl: url.href }
+  } catch {
+    return null
+  }
+}
+
 export function useOnlineSubtitles({
   pluginApi,
   unwrapResponse,
@@ -34,6 +49,7 @@ export function useOnlineSubtitles({
   confirmRiskyTimelineOffset,
   prepareOnlineUploadState,
   openOnlinePreview,
+  openUploadDialog,
   closeUploadDialog,
   applyAiTaskData,
   setAiTaskScopeTargets,
@@ -47,6 +63,7 @@ export function useOnlineSubtitles({
   const onlinePreviewDownloading = ref(false)
   const onlineAiDownloading = ref(false)
   const onlineError = ref('')
+  const onlineVerification = ref(null)
   const onlineDialog = ref(false)
   const onlineAiConfirmDialog = ref(false)
   const onlineTitle = ref('')
@@ -168,6 +185,7 @@ export function useOnlineSubtitles({
     onlineProviderProgress.value = {}
     selectedOnlineResultIds.value = []
     onlineError.value = ''
+    onlineVerification.value = null
     error.value = ''
     message.value = ''
     onlineDialog.value = true
@@ -223,6 +241,7 @@ export function useOnlineSubtitles({
     const payload = onlinePayload()
     onlineSearching.value = true
     onlineError.value = ''
+    onlineVerification.value = null
     onlineResults.value = []
     onlineLanguageFilter.value = 'all'
     onlineProviderFilter.value = 'all'
@@ -290,6 +309,7 @@ export function useOnlineSubtitles({
     if (onlineDownloading.value) {
       stopOnlineDownload()
     }
+    onlineVerification.value = null
     onlineDialog.value = false
   }
 
@@ -345,6 +365,7 @@ export function useOnlineSubtitles({
 
   function toggleOnlineResult(item, checked) {
     if (!isOnlineResultDownloadable(item)) return
+    onlineVerification.value = null
     const key = onlineResultKey(item)
     const set = new Set(selectedOnlineResultIds.value)
     if (checked) {
@@ -432,6 +453,7 @@ export function useOnlineSubtitles({
     onlineDownloading.value = true
     onlinePreviewDownloading.value = true
     onlineError.value = ''
+    onlineVerification.value = null
     try {
       const response = await withTimeout(
         pluginApi.value.onlineDownloadPreview({
@@ -447,13 +469,28 @@ export function useOnlineSubtitles({
       onlineDialog.value = false
     } catch (err) {
       if (downloadSeq !== onlineDownloadSeq) return
-      onlineError.value = errorMessage(err, '在线字幕下载预览失败')
+      const verification = subhdVerification(err, selectedOnlineResults.value)
+      if (verification) {
+        onlineVerification.value = verification
+      } else {
+        onlineError.value = errorMessage(err, '在线字幕下载预览失败')
+      }
     } finally {
       if (downloadSeq === onlineDownloadSeq) {
         onlineDownloading.value = false
         onlinePreviewDownloading.value = false
         onlineAiDownloading.value = false
       }
+    }
+  }
+
+  function uploadVerifiedSubtitle() {
+    if (!onlineVerification.value) return
+    if (openUploadDialog(onlineTargets.value, onlineTitle.value)) {
+      closeOnlineDialog()
+    } else {
+      onlineVerification.value = null
+      onlineError.value = '当前目标已不可写入，请重新选择'
     }
   }
 
@@ -472,6 +509,7 @@ export function useOnlineSubtitles({
     onlinePreviewDownloading,
     onlineAiDownloading,
     onlineError,
+    onlineVerification,
     onlineDialog,
     onlineAiConfirmDialog,
     onlineTitle,
@@ -518,6 +556,7 @@ export function useOnlineSubtitles({
     confirmOnlineAiTranslate,
     submitOnlineAiTranslate,
     downloadOnlinePreview,
+    uploadVerifiedSubtitle,
     stopOnlineDownload,
   }
 }

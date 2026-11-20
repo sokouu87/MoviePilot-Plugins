@@ -37,7 +37,17 @@ def _is_subhd_verification_notice(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     text = html.unescape(re.sub(r"<[^>]+>", "", value))
-    return bool(re.search(r"先完成\s*(?:人机核验|人机验证|人工验证)\s*[,，。]?\s*(?:后(?:再)?|再)\s*下载", text))
+    return bool(re.search(r"先完成\s*(?:人机核验|人机验证|人工验证)\s*[,，。]?\s*(?:后(?:再)?|再)\s*(?:点击\s*)?下载", text))
+
+
+def _is_subhd_turnstile_error(url: str, raw: bytes) -> bool:
+    if not urlparse(url).path.endswith(("/api/sub/prepare-download", "/api/sub/down")):
+        return False
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and data.get("turnstileRequired") is True
 
 
 def normalize_online_engine(value: Any) -> str:
@@ -165,8 +175,9 @@ class OnlinePageClient:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             _check_cloudflare_challenge(exc.headers)
-            detail = _decode_bytes(exc.read()[:500], exc.headers.get_content_charset())
-            if _is_subhd_verification_notice(detail):
+            raw = exc.read(16384)
+            detail = _decode_bytes(raw[:500], exc.headers.get_content_charset())
+            if _is_subhd_verification_notice(detail) or _is_subhd_turnstile_error(url, raw):
                 raise HumanVerificationRequiredError("字幕站点需要人机核验") from exc
             raise ValueError(f"请求失败 HTTP {exc.code}: {_compact_error_message(detail)}") from exc
         except (urllib.error.URLError, OSError, ssl.SSLError) as exc:

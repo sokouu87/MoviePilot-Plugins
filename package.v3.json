@@ -3,7 +3,7 @@
         "name": "海拉鲁字幕大师",
         "description": "支持字幕搜索、上传、匹配、改名、智能调轴与自动入库的字幕管理插件。",
         "labels": "字幕,ChineseSubFinder,媒体库,整理",
-        "version": "1.2.20",
+        "version": "1.2.21",
         "icon": "https://raw.githubusercontent.com/ifsherlock/MoviePilot-Plugins/main/icons/hyrule-subtitle-master.png",
         "author": "ifsherlock",
         "author_url": "https://github.com/ifsherlock",
@@ -11,6 +11,7 @@
         "system_version": ">=3.0.0",
         "release": true,
         "history": {
+            "v1.2.21": "识别 SubHD 下载接口的 Turnstile 核验状态；网页显示验证和上传入口并保留字幕目标，MPLite 可接续人工验证。",
             "v1.2.20": "支持 MPLite 在 SubHD 需要人机核验时接续下载和上传。",
             "v1.2.19": "修复桌面端空队列时自动入库入口被隐藏的问题；入口始终显示，空队列展示“暂无自动入库任务”。",
             "v1.2.18": "选择中英、中日等双语后，已有纯中文或不匹配字幕仍会继续补下载，无需开启严格模式；多个双语满足任一项即可，无匹配时不回退单语或 AI。手动筛选细分中英、中日、中韩、其他双语及单语、待确认，语言与来源按交集筛选并联动计数。修复本地内嵌字幕轨道用途标志及 UTF-8 读取，避免将强制/注释轨当成完整字幕；信任整理历史路径和 STRM 不探测行为保持不变。",
