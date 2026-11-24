@@ -129,7 +129,7 @@ onBeforeUnmount(() => { disposed = true; clearInterval(timer); clearTimeout(debo
         </button>
       </div>
     </header>
-    <SubtitleInventory v-if="showInventory" :api="api" :plugin-id="pluginId" />
+    <SubtitleInventory v-if="showInventory" :api="props.api" :plugin-id="props.pluginId" />
     <div v-show="!showInventory">
     <p v-if="!configured" role="status">请在插件设置中填入本机订阅线路密钥，或启用已配置的 AutoSubv3 订阅线路。</p>
     <p v-if="error" class="err" role="alert">{{ error }}</p>

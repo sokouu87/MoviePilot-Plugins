@@ -432,9 +432,9 @@ return (_ctx, _cache) => {
     (showInventory.value)
       ? (_openBlock$1(), _createBlock$1(SubtitleInventory, {
           key: 0,
-          api: api,
-          "plugin-id": __props.pluginId
-        }, null, 8, ["plugin-id"]))
+          api: props.api,
+          "plugin-id": props.pluginId
+        }, null, 8, ["api", "plugin-id"]))
       : _createCommentVNode$1("", true),
     _withDirectives$1(_createElementVNode$1("div", null, [
       (!configured.value)
@@ -622,7 +622,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const MediaLibrary = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-e390054f"]]);
+const MediaLibrary = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-c40b8a1c"]]);
 
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,vShow:_vShow,withDirectives:_withDirectives,createElementBlock:_createElementBlock} = await importShared('vue');
 
