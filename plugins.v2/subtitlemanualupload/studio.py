@@ -15,10 +15,15 @@ from filelock import FileLock, Timeout
 from .media import VIDEO, metadata, source_cues
 from .subtitles import MAX_SUBTITLE, parse, render, save_json, upload_member, write_file
 from .translation import DEFAULT_BANNED, read_state, translate, validated_glossary
+from . import task_history
 
 MODEL = "gpt-6.2-astra"
 BRIDGE = "http://127.0.0.1:18743/v1"
 EMPTY = {"context": "", "terms": []}
+
+
+class CancelledJob(Exception):
+    pass
 
 
 def digest(value):
@@ -34,6 +39,7 @@ class Studio:
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.worker = None
+        self.current_job = None
         with self.db() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS target (
@@ -47,6 +53,7 @@ class Studio:
                 CREATE UNIQUE INDEX IF NOT EXISTS active_job ON job(target) WHERE state IN ('queued','running');
                 CREATE TABLE IF NOT EXISTS manuscript(target TEXT PRIMARY KEY REFERENCES target(id), extension TEXT NOT NULL);
             """)
+            task_history.migrate(conn, self.root / "jobs")
 
     @contextmanager
     def db(self):
@@ -66,9 +73,10 @@ class Studio:
         key = digest(os.path.normcase(str(path)))
         with self.db() as conn:
             if meta is None:
-                conn.execute("INSERT OR IGNORE INTO target(id,path,meta) VALUES (?,?,?)", (key, str(path), json.dumps(metadata(path))))
+                conn.execute("INSERT INTO target(id,path,meta) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET listed=1 WHERE target.listed=0",
+                             (key, str(path), json.dumps(metadata(path))))
             else:
-                conn.execute("INSERT INTO target(id,path,meta) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET meta=excluded.meta WHERE target.edited=0",
+                conn.execute("INSERT INTO target(id,path,meta) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET listed=1, meta=CASE WHEN target.edited=0 THEN excluded.meta ELSE target.meta END",
                              (key, str(path), json.dumps(meta, ensure_ascii=False)))
         return key
 
@@ -82,14 +90,14 @@ class Studio:
         if not row:
             raise ValueError("目标不存在，请刷新媒体列表")
         path = Path(row["path"])
-        if path.suffix.lower() not in VIDEO or not path.is_file():
+        if not path.is_absolute() or path.suffix.lower() not in VIDEO or not path.is_file():
             raise ValueError("目标文件已移动或离线，请刷新媒体列表")
         return path, json.loads(row["meta"])
 
     def targets(self, query="", offset=0):
         pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         with self.db() as conn:
-            rows = conn.execute(r"SELECT * FROM target WHERE path LIKE ? ESCAPE '\' OR meta LIKE ? ESCAPE '\' ORDER BY rowid DESC LIMIT 51 OFFSET ?",
+            rows = conn.execute(r"SELECT * FROM target WHERE listed=1 AND (path LIKE ? ESCAPE '\' OR meta LIKE ? ESCAPE '\') ORDER BY rowid DESC LIMIT 51 OFFSET ?",
                                 (pattern, pattern, offset)).fetchall()
         results = []
         for row in rows[:50]:
@@ -111,18 +119,22 @@ class Studio:
             if active:
                 return active["id"]
             if automatic:
-                last = conn.execute("SELECT id,state FROM job WHERE target=? ORDER BY id DESC LIMIT 1", (key,)).fetchone()
-                if last and (last["state"] == "failed" or all(video.with_name(f"{video.stem}.zh-en.ai.{ext}").is_file() for ext in ("ass","srt"))):
+                last = conn.execute("SELECT id,state FROM job WHERE target=? AND hidden=0 AND legacy_id IS NULL ORDER BY id DESC LIMIT 1", (key,)).fetchone()
+                if last and (last["state"] in ("failed", "cancelled") or all(video.with_name(f"{video.stem}.zh-en.ai.{ext}").is_file() for ext in ("ass","srt"))):
                     return last["id"]
-            job = conn.execute("INSERT INTO job(target,state) VALUES (?,'queued')", (key,)).lastrowid
+            job = conn.execute("INSERT INTO job(target,state,origin) VALUES (?,'queued',?)", (key,"入库触发" if automatic else "手动提交")).lastrowid
         self.wake.set()
         return job
 
     def history(self):
         with self.db() as conn:
-            rows = conn.execute("SELECT j.*,t.path FROM job j JOIN target t ON t.id=j.target ORDER BY j.id DESC LIMIT 80").fetchall()
-        return [{**{k: row[k] for k in ("id", "target", "state", "detail", "created")}, "file": Path(row["path"]).name,
-                 "report": json.loads(row["report"])} for row in rows]
+            return task_history.page(conn, limit=80, native_only=True)["jobs"]
+
+    def manage(self, action, ids):
+        with self.db() as conn:
+            result = task_history.operate(conn, action, ids)
+        self.wake.set()
+        return result
 
     def glossary_path(self, meta):
         title = re.sub(r"[^a-z0-9\u0080-\uffff]+", " ", meta["title"].casefold()).strip()
@@ -171,17 +183,24 @@ class Studio:
                     detail = message
             raise ValueError(f"{stage} HTTP {result.status_code} · {detail}")
         response = result.json()
+        self.check_running()
         return (json.loads(response["text"]) if schema else response["text"]), response["sources"]
 
     def check_running(self):
         if self.stop.is_set():
             raise InterruptedError("插件已暂停")
+        if self.current_job is not None:
+            with self.db() as conn:
+                row = conn.execute("SELECT cancel_requested FROM job WHERE id=?", (self.current_job,)).fetchone()
+            if row and row[0]:
+                raise CancelledJob()
 
     def run_job(self, job):
         key = job["target"]
         video, meta = self.target(key)
         number = job["id"]
-        out = [video.with_name(f"{video.stem}.zh-en.ai.{ext}") for ext in ("ass", "srt")]
+        variant = f".r{number}" if job["rerun_of"] is not None else ""
+        out = [video.with_name(f"{video.stem}{variant}.zh-en.ai.{ext}") for ext in ("ass", "srt")]
         workspace = self.root / "jobs" / str(number)
         workspace.mkdir(parents=True, exist_ok=True)
         manifest = workspace / "export.json"
@@ -193,7 +212,7 @@ class Studio:
 
         if not manifest.is_file():
             if any(p.exists() or p.is_symlink() for p in out):
-                return "skipped", "已保留同名 AI 字幕，如需重译请先移走同名文件", {}
+                return "skipped", "已有同名 AI 字幕，可在查看数据中重新生成独立版本", {}
             progress("选择英文原稿")
             with self.db() as conn:
                 picked = conn.execute("SELECT extension FROM manuscript WHERE target=?", (key,)).fetchone()
@@ -208,6 +227,9 @@ class Studio:
                 cues, source = parse(manual.read_bytes(), manual.suffix), "人工英文稿 · " + manual.name
             else:
                 cues, source = source_cues(video, self.config["whisper"], progress)
+            report = {"source": source, "model": self.config["model"], "cues": len(cues)}
+            with self.db() as conn:
+                conn.execute("UPDATE job SET report=? WHERE id=?", (json.dumps(report, ensure_ascii=False), number))
             glossary_path = self.glossary_path(meta)
             baseline = validated_glossary(read_state(glossary_path, EMPTY))
             banned = [w.strip() for w in re.split(r"[,，、\n]", self.config.get("banned", DEFAULT_BANNED)) if w.strip()]
@@ -220,8 +242,12 @@ class Studio:
             save_json(manifest, {"report": report, "baseline": baseline, "glossary": glossary, "meta": meta})
 
         bundle = read_state(manifest, {})
-        for target in out:
+        if not job["publishing"]:
             self.check_running()
+        with self.db() as conn:
+            if not conn.execute("UPDATE job SET publishing=1 WHERE id=? AND state='running' AND cancel_requested=0", (number,)).rowcount:
+                raise CancelledJob()
+        for target in out:
             data = (workspace / ("result" + target.suffix)).read_bytes()
             try:
                 write_file(target, data, mode=0o600 | (video.stat().st_mode & 0o044))
@@ -246,12 +272,12 @@ class Studio:
     def retry(self, number):
         with self.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT target FROM job WHERE id=? AND state='failed'", (number,)).fetchone()
+            row = conn.execute("SELECT target FROM job WHERE id=? AND state='failed' AND hidden=0 AND legacy_id IS NULL", (number,)).fetchone()
             if not row:
                 raise ValueError("仅失败的任务可续跑")
             if conn.execute("SELECT 1 FROM job WHERE target=? AND state IN ('running','queued')", (row["target"],)).fetchone():
                 raise ValueError("同一目标已有任务")
-            conn.execute("UPDATE job SET state='queued',detail='' WHERE id=?", (number,))
+            conn.execute("UPDATE job SET state='queued',detail='',finished='',cancel_requested=0,publishing=0 WHERE id=?", (number,))
         self.wake.set()
 
     def start(self):
@@ -271,9 +297,12 @@ class Studio:
             return
         try:
             with self.db() as conn:
-                conn.execute("UPDATE job SET state='queued' WHERE state='running'")
+                conn.execute("UPDATE job SET state='cancelled',finished=CURRENT_TIMESTAMP,detail='已取消',cancel_requested=0 WHERE state='running' AND cancel_requested=1 AND publishing=0")
+                # 发布可能恰好在两份字幕之间中断，恢复时须继续发布，期间保持不可取消。
+                conn.execute("UPDATE job SET state='queued',cancel_requested=0 WHERE state='running'")
             while not self.stop.is_set():
                 with self.db() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
                     job = conn.execute("SELECT * FROM job WHERE state='queued' ORDER BY id LIMIT 1").fetchone()
                     if job:
                         conn.execute("UPDATE job SET state='running' WHERE id=?", (job["id"],))
@@ -281,15 +310,25 @@ class Studio:
                     self.wake.wait(5)
                     self.wake.clear()
                     continue
+                self.current_job = job["id"]
                 try:
                     state, detail, report = self.run_job(job)
+                except CancelledJob:
+                    state, detail, report = "cancelled", "已取消翻译", None
                 except InterruptedError:
-                    state, detail, report = "queued", "等待继续", {}
+                    state, detail, report = "queued", "等待继续", None
                 except Exception as exc:
-                    state, detail, report = "failed", str(exc)[:500], {}
+                    state, detail, report = "failed", str(exc)[:500], None
                 with self.db() as conn:
-                    conn.execute("UPDATE job SET state=?,detail=?,report=? WHERE id=?",
-                                 (state, detail, json.dumps(report, ensure_ascii=False), job["id"]))
+                    conn.execute("BEGIN IMMEDIATE")
+                    flags = conn.execute("SELECT cancel_requested,publishing FROM job WHERE id=?", (job["id"],)).fetchone()
+                    if flags[0] and not flags[1]:
+                        state, detail, report = "cancelled", "已取消翻译", None
+                    conn.execute("""UPDATE job SET state=?,detail=?,report=COALESCE(?,report),
+                                    finished=CASE WHEN ?='queued' THEN '' ELSE CURRENT_TIMESTAMP END,
+                                    cancel_requested=0,publishing=CASE WHEN ?='queued' THEN publishing ELSE 0 END WHERE id=?""",
+                                 (state, detail, json.dumps(report, ensure_ascii=False) if report is not None else None, state, state, job["id"]))
+                self.current_job = None
         finally:
             lock.release()
 

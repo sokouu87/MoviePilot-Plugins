@@ -57,7 +57,7 @@ const file = ref(null), member = ref(''), members = ref([]), role = ref('zh-Hans
 const busy = ref(false), message = ref(''), error = ref(''), index = ref(false), account = ref(''), configured = ref(true);
 const glossary = ref(null), meta = ref(null);
 let timer, debounce, searchSeq = 0, disposed = false;
-const statuses = { done: '已完成', skipped: '已跳过', queued: '排队中', running: '处理中', failed: '失败' };
+const statuses = { done: '已完成', skipped: '已跳过', queued: '排队中', running: '处理中', failed: '失败', cancelled: '已取消' };
 
 async function api(method, endpoint, body) {
   const value = await props.api[method]('plugin/' + props.pluginId + '/' + endpoint, body);
@@ -404,6 +404,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const AppPage = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-09aa49e5"]]);
+const AppPage = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-c9ced1b2"]]);
 
 export { AppPage as default };

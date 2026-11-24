@@ -1,0 +1,19 @@
+
+.studio[data-v-c9ced1b2]{max-width:960px;margin:auto;padding:1rem;color:inherit;font:inherit;overflow-wrap:anywhere}
+.studio header[data-v-c9ced1b2],.row[data-v-c9ced1b2]{display:flex;align-items:center;flex-wrap:wrap;gap:.7rem}
+.studio header[data-v-c9ced1b2]{justify-content:space-between}
+.studio section[data-v-c9ced1b2]{padding:1.1rem 0;border-top:1px solid rgba(128,128,128,.32)}
+.studio h2[data-v-c9ced1b2],.studio h3[data-v-c9ced1b2],.studio h4[data-v-c9ced1b2],.studio p[data-v-c9ced1b2]{margin:.45rem 0 .7rem}
+.studio h4[data-v-c9ced1b2]{margin-top:1.35rem}
+.studio label[data-v-c9ced1b2]{display:block;margin:.35rem 0}
+.studio input[data-v-c9ced1b2],.studio select[data-v-c9ced1b2],.studio textarea[data-v-c9ced1b2],.studio button[data-v-c9ced1b2]{border:1px solid #8888;border-radius:6px;padding:.42rem .65rem;font:inherit;color:inherit}
+.studio input[data-v-c9ced1b2],.studio textarea[data-v-c9ced1b2],.studio select[data-v-c9ced1b2]{max-width:100%;background:rgb(var(--v-theme-surface,255,255,255))}
+.studio textarea[data-v-c9ced1b2]{display:block;width:100%}
+.studio button[data-v-c9ced1b2]{cursor:pointer}
+.studio button[data-v-c9ced1b2]:disabled{opacity:.55;cursor:default}
+.studio button[data-v-c9ced1b2]:focus-visible,.studio a[data-v-c9ced1b2]:focus-visible{outline:2px solid currentColor}
+.studio .primary[data-v-c9ced1b2],.studio button[aria-pressed=true][data-v-c9ced1b2]{background:#225d52;color:white}
+.studio .choices[data-v-c9ced1b2]{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));padding:0;gap:.4rem;margin:.6rem 0;max-height:18rem;overflow:auto}
+.choices button[data-v-c9ced1b2]{display:block;width:100%;text-align:left;overflow-wrap:anywhere}.choices small[data-v-c9ced1b2]{display:block}
+.studio article[data-v-c9ced1b2]{border-bottom:1px solid #8884;padding:.6rem 0}.studio a[data-v-c9ced1b2]{text-decoration:underline}
+.studio .err[data-v-c9ced1b2]{color:rgb(var(--v-theme-error,184,51,40))}.studio input[type=search][data-v-c9ced1b2]{flex:1}

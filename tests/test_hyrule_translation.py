@@ -3,12 +3,19 @@ import codecs
 import importlib.util
 import io
 import json
+import os
+import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import types
 import unittest
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "plugins.v3" / "subtitlemanualupload"
@@ -18,6 +25,7 @@ sys.modules[module.__name__] = module
 from hyrule_test.subtitles import Cue, ass_time, parse, render, upload_member, write_file
 from hyrule_test.translation import batches, check_item, translate, validated_glossary
 from hyrule_test.studio import EMPTY, Studio
+from hyrule_test import task_history
 
 
 SAMPLE = b"3\n00:00:59,995 --> 00:01:00,001\n<i>JOHN: [sighs] Hello.</i>\n\n7\n00:01:00,600 --> 00:01:01,600\n[gunshot]\n\n8\n00:01:05,000 --> 00:01:06,100\n[ambient music]\n"
@@ -156,6 +164,228 @@ class Subtitles(unittest.TestCase):
             quality.response_text(response(events[1:]), True)
         with self.assertRaises(ValueError):
             quality.response_text(response(events[:-1]), True)
+
+
+class TaskHistory(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.movie = self.root / "验收片 S01E04.mkv"
+        self.movie.touch()
+        self.config = {"model": "test", "effort": "high", "whisper": ""}
+
+    def start(self, studio):
+        studio.start()
+        def shutdown():
+            studio.close()
+            studio.worker.join(10)
+            self.assertFalse(studio.worker.is_alive())
+        self.addCleanup(shutdown)
+
+    def wait_for_job(self, studio, number, state):
+        until = time.monotonic() + 10
+        while time.monotonic() < until:
+            row = next(r for r in studio.history() if r["id"] == number)
+            if row["state"] == state:
+                return row
+            time.sleep(.02)
+        self.fail(str(row))
+
+    def test_20_upgrade_preserves_rows_and_only_recovers_the_recorded_export_time(self):
+        directory = self.root / "ai_studio"
+        artifact = directory / "jobs" / "1" / "export.json"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("{}", encoding="utf-8")
+        os.utime(artifact, (1704067200, 1704067200))
+        with closing(sqlite3.connect(directory / "studio.sqlite")) as old, old:
+            old.executescript("""
+                CREATE TABLE target (id TEXT PRIMARY KEY,path TEXT UNIQUE,meta TEXT,edited INTEGER DEFAULT 0);
+                CREATE TABLE job (id INTEGER PRIMARY KEY,target TEXT,state TEXT,detail TEXT DEFAULT '',
+                                  report TEXT DEFAULT '{}',created TEXT DEFAULT CURRENT_TIMESTAMP);
+            """)
+            old.execute("INSERT INTO target(id,path,meta) VALUES ('original',?,'{}')", (str(self.movie),))
+            old.executemany("INSERT INTO job(target,state) VALUES ('original',?)", [("done",), ("failed",)])
+        for _ in range(2):
+            studio = Studio(self.root, self.config, None)
+            failed, done = studio.history()
+            self.assertEqual((failed["state"], failed["finished"]), ("failed", ""))
+            self.assertNotIn("rendered", failed["report"])
+            self.assertEqual((done["state"], done["finished"]), ("done", ""))
+            self.assertEqual(done["report"]["rendered"], "2024-01-01 00:00:00")
+
+    def test_finished_legacy_history_counts_time_filters_and_deleted_records(self):
+        studio = Studio(self.root, self.config, None)
+        statuses = ["completed"] * 16 + ["failed"] * 19 + ["ignored"] * 47 + ["no_audio"]
+        records = {str(i): {"video_file": str(self.movie), "source": "subtitle_manual_upload", "status": status,
+                            "resolved_source": "embedded", "output_path": str(self.movie.with_suffix(".srt")),
+                            "add_time": f"2026-11-24T14:{i // 60:02d}:{i % 60:02d}+08:00",
+                            "complete_time": "2026-11-24T14:02:00+08:00",
+                            "error_message": "原错误" if status == "failed" else ""}
+                   for i, status in enumerate(statuses)}
+        records["83"] = {"video_file": str(self.movie), "status": "pending"}
+        records["84"] = {"video_file": str(self.movie), "status": "in_progress"}
+        records["85"] = {"video_file": str(self.movie), "status": {}}
+        records["82"]["video_file"] = str(self.root / "已归档.旧格式")
+        for _ in range(2):
+            with studio.db() as db:
+                task_history.import_finished(db, records)
+        with studio.db() as db:
+            latest = task_history.page(db)
+            oldest = task_history.page(db, order="asc", limit=1)
+            failures = task_history.page(db, state="failed", order="asc", offset=1, limit=1)
+        self.assertEqual(latest["counts"], {"done": 16, "failed": 19, "skipped": 48})
+        self.assertEqual(latest["total"], 83)
+        first = oldest["jobs"][0]
+        self.assertEqual((first["created"], first["finished"]), ("2026-11-24 06:00:00", "2026-11-24 06:02:00"))
+        self.assertEqual((first["origin"], first["report"]["source"]), ("字幕匹配联动", "视频内嵌字幕"))
+        self.assertEqual(first["report"]["files"], [self.movie.with_suffix(".srt").name])
+        self.assertTrue(first["legacy"] and oldest["more"])
+        last = latest["jobs"][0]
+        self.assertEqual(last["created"], "2026-11-24 06:01:22")
+        self.assertIn("音轨", last["detail"])
+        self.assertIn("不支持", studio.manage("restart", [last["id"]])["skipped"][0]["reason"])
+        self.assertEqual((failures["jobs"][0]["detail"], failures["jobs"][0]["created"]), ("原错误", "2026-11-24 06:00:17"))
+        self.assertEqual(studio.targets()["targets"], [])
+        self.assertEqual(studio.history(), [])
+        studio.manage("delete", [first["id"]])
+        with studio.db() as db:
+            task_history.import_finished(db, records)
+            self.assertEqual(task_history.page(db)["total"], 82)
+        self.assertTrue(studio.register(self.movie))
+        self.assertEqual(len(studio.targets()["targets"]), 1)
+
+    def test_queue_cancellation_and_two_simultaneous_restart_requests(self):
+        studio = Studio(self.root, self.config, None)
+        key = studio.register(self.movie)
+        job = studio.submit(key, automatic=True)
+        self.assertEqual(studio.manage("cancel", [job, job])["changed"], [job])
+        self.assertEqual(studio.submit(key, automatic=True), job)
+        self.assertEqual(studio.history()[0]["state"], "cancelled")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            runs = list(pool.map(lambda _: studio.manage("restart", [job]), range(2)))
+        self.assertEqual(sum(len(r["new_jobs"]) for r in runs), 1)
+        self.assertEqual(sum(len(r["skipped"]) for r in runs), 1)
+        rerun = next(r["new_jobs"][0] for r in runs if r["new_jobs"])
+        self.assertEqual(studio.submit(key), rerun)
+        self.assertEqual(studio.manage("delete", [rerun])["changed"], [])
+        self.assertEqual(studio.manage("cancel", [rerun])["changed"], [rerun])
+        self.assertGreater(studio.submit(key), rerun)
+        with self.assertRaises(ValueError):
+            studio.manage("cancel", [True])
+
+    def test_cooperative_cancellation_before_publish(self):
+        studio = Studio(self.root, self.config, None)
+        key = studio.register(self.movie)
+        studio.upload(key, "稿件.srt", SAMPLE, "", "eng")
+        reached, release = threading.Event(), threading.Event()
+        def translate(*args, **kwargs):
+            reached.set()
+            if not release.wait(5):
+                raise TimeoutError()
+            kwargs["progress"]("翻译下一批")
+            self.fail("已取消的任务仍在执行")
+        with patch("hyrule_test.studio.translate", translate):
+            job = studio.submit(key)
+            self.start(studio)
+            try:
+                self.assertTrue(reached.wait(5))
+                self.assertEqual(studio.manage("cancel", [job])["changed"], [job])
+                self.assertTrue(studio.history()[0]["cancelling"])
+            finally:
+                release.set()
+            result = self.wait_for_job(studio, job, "cancelled")
+        self.assertTrue(result["finished"])
+        self.assertIn("人工英文稿", result["report"]["source"])
+        self.assertEqual(list(self.root.glob("*.zh-en.ai.*")), [])
+
+    def test_partial_export_recovers_after_restart_and_protects_original_subtitles(self):
+        studio = Studio(self.root, self.config, None)
+        original = self.movie.with_suffix(".zh-en.ai.ass")
+        original.write_bytes(b"previous edition")
+        key = studio.register(self.movie)
+        old = studio.submit(key)
+        studio.manage("cancel", [old])
+        blocker_file = self.root / "blocker.mkv"
+        blocker_file.touch()
+        blocker = studio.submit(studio.register(blocker_file))
+        rerun = studio.manage("restart", [old])["new_jobs"][0]
+        work = studio.root / "jobs" / str(rerun)
+        work.mkdir(parents=True)
+        _, meta = studio.target(key)
+        outputs = [self.movie.with_suffix(f".r{rerun}.zh-en.ai.{ext}") for ext in ("ass", "srt")]
+        report = {"files": [p.name for p in outputs]}
+        (work / "export.json").write_text(json.dumps({"report": report, "meta": meta, "baseline": EMPTY, "glossary": EMPTY}), encoding="utf-8")
+        for out in outputs:
+            (work / ("result" + out.suffix)).write_bytes(out.suffix.encode())
+        outputs[0].write_bytes(b".ass")
+        with studio.db() as db:
+            db.execute("UPDATE job SET state='running',publishing=1 WHERE id=?", (rerun,))
+        reached, release = threading.Event(), threading.Event()
+        run = studio.run_job
+        def process(job):
+            if job["id"] == blocker:
+                reached.set()
+                if not release.wait(5):
+                    raise TimeoutError()
+                return "done", "", {}
+            return run(job)
+        with patch.object(studio, "run_job", process):
+            self.start(studio)
+            try:
+                self.assertTrue(reached.wait(5))
+                row = self.wait_for_job(studio, rerun, "queued")
+                self.assertTrue(row["publishing"])
+                self.assertEqual(studio.manage("cancel", [rerun])["changed"], [])
+            finally:
+                release.set()
+            result = self.wait_for_job(studio, rerun, "done")
+        self.assertEqual(result["report"]["files"], report["files"])
+        self.assertEqual([p.read_bytes() for p in outputs], [b".ass", b".srt"])
+        self.assertEqual(original.read_bytes(), b"previous edition")
+        if os.name != "nt":
+            self.assertEqual(outputs[1].stat().st_mode & 0o777, 0o600 | self.movie.stat().st_mode & 0o044)
+        studio.manage("delete", [rerun])
+        self.assertTrue(all(p.exists() for p in outputs))
+
+    def test_restart_uses_new_files_and_retry_finishes_a_partial_pair(self):
+        studio = Studio(self.root, self.config, None)
+        key = studio.register(self.movie)
+        studio.upload(key, "source.srt", SAMPLE, "", "eng")
+        originals = [self.movie.with_suffix(".zh-en.ai." + ext) for ext in ("ass", "srt")]
+        for f in originals:
+            f.write_bytes(b"original")
+        job = studio.submit(key)
+        studio.manage("cancel", [job])
+        rerun = studio.manage("restart", [job])["new_jobs"][0]
+        calls, refused = [], []
+        fail_at = self.movie.with_suffix(f".r{rerun}.zh-en.ai.srt")
+        def translate(cues, *args, **kwargs):
+            calls.append(len(cues))
+            return ({c.id: item(c.id, f"第{len(calls)}版") if c.en else item(c.id, "", "sdh_drop")
+                     for c in cues}, EMPTY, {})
+        def write(path, data, **kwargs):
+            if path == fail_at and not refused:
+                refused.append(studio.manage("cancel", [rerun])["changed"])
+                raise OSError("模拟第二个文件写入失败")
+            return write_file(path, data, **kwargs)
+        with patch("hyrule_test.studio.translate", translate), patch("hyrule_test.studio.write_file", write):
+            self.start(studio)
+            failed = self.wait_for_job(studio, rerun, "failed")
+            self.assertIn("模拟第二个文件", failed["detail"])
+            self.assertEqual(refused, [[]])
+            partial = fail_at.with_suffix(".ass").read_bytes()
+            self.assertFalse(fail_at.exists())
+            studio.retry(rerun)
+            self.wait_for_job(studio, rerun, "done")
+            self.assertEqual(calls, [3])
+            self.assertEqual(fail_at.with_suffix(".ass").read_bytes(), partial)
+            second = studio.manage("restart", [rerun])["new_jobs"][0]
+            final = self.wait_for_job(studio, second, "done")
+        self.assertEqual(calls, [3, 3])
+        self.assertIn("第1版", fail_at.read_text(encoding="utf-8-sig"))
+        self.assertIn("第2版", (self.root / final["report"]["files"][1]).read_text(encoding="utf-8-sig"))
+        self.assertEqual([f.read_bytes() for f in originals], [b"original", b"original"])
 
 
 if __name__ == "__main__":

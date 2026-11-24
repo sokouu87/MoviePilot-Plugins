@@ -6,13 +6,15 @@
 
 | 插件 | 目录 | 版本 | 主要功能 |
 | --- | --- | --- | --- |
-| 海拉鲁 AI 字幕 | `plugins.v2/subtitlemanualupload`、`plugins.v3/subtitlemanualupload` | 2.0.1 | ChatGPT 订阅、双语 ASS/SRT、SubHD 官网下载与手动上传 |
+| 海拉鲁 AI 字幕 | `plugins.v2/subtitlemanualupload`、`plugins.v3/subtitlemanualupload` | 2.1.0 | ChatGPT 订阅、双语 ASS/SRT、任务管理、SubHD 官网下载与手动上传 |
 | AI字幕生成(联动版) | `plugins.v2/autosubv3` | 3.5.54 | 音轨识别、字幕提取、AI 翻译、任务队列、联动字幕匹配 |
 | Emby媒体库封面生成 | `plugins.v2/mediacovergenerator` | 0.9.10 | 生成 Emby/Jellyfin 媒体库静态或动态封面 |
 
 ## 海拉鲁 AI 字幕
 
 新入库影片直接进入 AI 翻译队列。插件从英文外挂、内封字幕或本地 Whisper 识别结果获取原稿，使用 ChatGPT 订阅调研译名、分批精翻并审校全集。手动字幕从 SubHD 官网下载，回到选中的影片或集数上传。
+
+「查看数据」可按状态筛选、排序和批量管理字幕任务，并保留旧联动版已结束的任务记录。重新生成会另存译稿。使用海拉鲁时可停用「AI字幕生成（联动版）」，NAS 上的 ChatGPT 订阅服务需要继续运行。
 
 [安装、订阅授权与使用说明](plugins.v3/subtitlemanualupload/README.md)
 
