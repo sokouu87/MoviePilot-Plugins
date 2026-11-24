@@ -1,5 +1,6 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import SubtitleInventory from './SubtitleInventory.vue'
 
 const props = defineProps({ api: Object, pluginId: { type: String, default: 'SubtitleManualUpload' } })
 const storeKey = 'hyrule-ai.selection.' + props.pluginId
@@ -7,6 +8,7 @@ const query = ref(''), rows = ref([]), selected = ref(null), more = ref(false)
 const file = ref(null), member = ref(''), members = ref([]), role = ref('zh-Hans'), input = ref(null)
 const busy = ref(false), message = ref(''), error = ref(''), index = ref(false), account = ref(''), configured = ref(true)
 const glossary = ref(null), meta = ref(null)
+const showInventory = ref(false)
 let timer, debounce, searchSeq = 0, disposed = false
 
 async function api(method, endpoint, body) {
@@ -118,7 +120,17 @@ onBeforeUnmount(() => { disposed = true; clearInterval(timer); clearTimeout(debo
 
 <template>
   <main class="studio">
-    <header><h2>海拉鲁 AI 字幕</h2><span>{{ account }}</span></header>
+    <header>
+      <h2>海拉鲁 AI 字幕</h2>
+      <div class="row">
+        <span>{{ account }}</span>
+        <button :aria-expanded="showInventory" @click="showInventory = !showInventory">
+          {{ showInventory ? '返回选片' : '字幕清单' }}
+        </button>
+      </div>
+    </header>
+    <SubtitleInventory v-if="showInventory" :api="api" :plugin-id="pluginId" />
+    <div v-show="!showInventory">
     <p v-if="!configured" role="status">请在插件设置中填入本机订阅线路密钥，或启用已配置的 AutoSubv3 订阅线路。</p>
     <p v-if="error" class="err" role="alert">{{ error }}</p>
     <p v-if="message" role="status">{{ message }}</p>
@@ -150,6 +162,7 @@ onBeforeUnmount(() => { disposed = true; clearInterval(timer); clearTimeout(debo
       <div class="row"><label>用途<select v-model="role"><option value="zh-Hans">简中成品</option><option value="zh-Hant">繁中成品</option><option value="zh-en">中英成品</option><option value="eng">英文原稿，供 AI 翻译</option></select></label>
         <button :disabled="busy || !file || (members.length && !member)" @click="upload">上传到当前影片</button></div>
     </section>
+    </div>
   </main>
 </template>
 

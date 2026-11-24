@@ -4,6 +4,7 @@ import threading
 import zipfile
 from pathlib import Path
 
+import httpx
 from fastapi import HTTPException, Request
 from app.plugins import _PluginBase
 from app.schemas.types import EventType
@@ -19,8 +20,9 @@ except ImportError:
 
 from .media import metadata
 from .studio import BRIDGE, EMPTY, MODEL, Studio
+from .subtitles import save_json
 from .translation import DEFAULT_BANNED, read_state
-from . import task_history
+from . import inventory, task_history
 
 DEFAULT = {"enabled": False, "auto_translate": True, "show_sidebar_nav": True, "model": MODEL, "effort": "high",
            "whisper": "", "bridge_key": "", "banned": DEFAULT_BANNED, "manual_dirs": ""}
@@ -44,7 +46,7 @@ class SubtitleManualUpload(_PluginBase):
     plugin_name = "海拉鲁 AI 字幕"
     plugin_desc = "用 ChatGPT 订阅调研、精翻并审校双语字幕，支持前往 SubHD 官网下载后手动上传。"
     plugin_icon = "https://raw.githubusercontent.com/sokouu87/moviepilot-plugins/main/icons/hyrule-subtitle-master.png"
-    plugin_version = "2.1.1"
+    plugin_version = "2.2.0"
     plugin_author = "sokouu87"
     author_url = "https://github.com/sokouu87"
     plugin_config_prefix = "subtitlemanualupload_"
@@ -72,6 +74,9 @@ class SubtitleManualUpload(_PluginBase):
         self._indexing = False
         self._index_error = ""
         self._history_error = ""
+        self._inventory_lock = threading.Lock()
+        self._inventory_progress = ""
+        self._inventory_error = ""
         if not self._enabled:
             return
         legacy = self.get_config("AutoSubv3") or {}
@@ -224,7 +229,9 @@ class SubtitleManualUpload(_PluginBase):
                   ("/translate", self.submit, "POST"), ("/retry", self.retry, "POST"), ("/upload", self.upload, "POST"),
                   ("/glossary", self.glossary, "GET"), ("/glossary", self.save_glossary, "POST"),
                   ("/metadata", self.save_metadata, "POST"), ("/task_page", self.task_page, "GET"),
-                  ("/task_actions", self.task_actions, "POST")]
+                  ("/task_actions", self.task_actions, "POST"),
+                  ("/subtitle_inventory", self.subtitle_inventory, "GET"),
+                  ("/inventory_scan", self.inventory_scan, "POST")]
         return [{"path": p, "endpoint": f, "methods": [m], "auth": "bear", "summary": f.__doc__ or self.plugin_name} for p, f, m in routes]
 
     def targets(self, q: str = "", offset: int = 0):
@@ -251,6 +258,47 @@ class SubtitleManualUpload(_PluginBase):
 
     def task_actions(self, body: dict):
         return self._check(self._active().manage, body.get("action"), body.get("ids"))
+
+    def subtitle_inventory(self, state: str = "missing", kind: str = "all", q: str = "", offset: int = 0):
+        studio = self._active()
+        snapshot = read_state(studio.root / "subtitle_inventory.json", {})
+        result = self._check(inventory.page, snapshot, state, kind, q[:240], max(0, offset))
+        return {**result, "scanning": self._inventory_lock.locked(), "progress": self._inventory_progress,
+                "error": self._inventory_error}
+
+    def inventory_scan(self):
+        studio = self._active()
+        lock = self._inventory_lock
+        if not lock.acquire(blocking=False):
+            return {"ok": True}
+        self._inventory_progress, self._inventory_error = "正在读取 Emby 片库", ""
+
+        def progress(message):
+            if self._studio is studio:
+                self._inventory_progress = message
+
+        def work():
+            try:
+                with studio.db() as conn:
+                    paths = {row["path"] for row in conn.execute("SELECT path FROM target WHERE listed=1")}
+                snapshot = inventory.scan(inventory.configured_servers(), paths, progress, studio.stop.is_set)
+                if snapshot is not None and self._studio is studio and not studio.stop.is_set():
+                    save_json(studio.root / "subtitle_inventory.json", snapshot)
+            except Exception as exc:
+                if self._studio is studio:
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        self._inventory_error = f"Emby 返回 HTTP {exc.response.status_code}"
+                    elif isinstance(exc, ValueError):
+                        self._inventory_error = str(exc)[:160]
+                    else:
+                        self._inventory_error = "读取片库失败，请检查 Emby 连接后重试"
+                logger.warning("[海拉鲁 AI 字幕] 片库清点失败：%s", type(exc).__name__)
+            finally:
+                progress("")
+                lock.release()
+
+        threading.Thread(target=work, name="hyrule-subtitle-inventory", daemon=True).start()
+        return {"ok": True}
 
     @staticmethod
     def _check(call, *args):
