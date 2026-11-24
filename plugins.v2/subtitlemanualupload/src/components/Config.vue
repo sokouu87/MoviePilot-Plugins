@@ -8,7 +8,8 @@ watch(()=>props.initialConfig, (value)=>{
   data.value={...v, enabled:v.enabled ?? false, auto_translate:v.auto_translate ?? v.auto_search_on_transfer ?? true,
     show_sidebar_nav:v.show_sidebar_nav ?? true, model:v.model || 'gpt-6.2-astra', effort:v.effort || 'high',
     bridge_key:v.bridge_key || '', whisper:v.whisper || '', banned:v.banned ?? '破防、内卷、绝绝子、老铁、诸葛亮、塞翁失马、三顾茅庐',
-    manual_dirs:v.manual_dirs ?? (v.manual_strm_enabled ? [].concat(v.manual_strm_paths || []).join('\n') : '')}
+    manual_dirs:v.manual_dirs ?? (v.manual_strm_enabled ? [].concat(v.manual_strm_paths || []).join('\n') : ''),
+    emby_directory_map:v.emby_directory_map || ''}
 },{immediate:true})
 </script>
 <template>
@@ -22,6 +23,7 @@ watch(()=>props.initialConfig, (value)=>{
   <label>本机订阅服务密钥<input v-model.trim="data.bridge_key" type="password" autocomplete="new-password" placeholder="已配置旧订阅线路时可留空"></label>
   <label>Whisper 模型目录<input v-model.trim="data.whisper" placeholder="留空使用 AutoSubv3 已缓存的模型"></label>
   <label>额外 STRM 目录，每行一条<textarea v-model="data.manual_dirs" rows="2"></textarea></label>
+  <label>Emby 目录映射，每行一条<textarea v-model="data.emby_directory_map" rows="2" placeholder="/Emby目录=/MoviePilot目录"></textarea></label>
   <label>翻译禁用词，以顿号或换行分隔<textarea v-model="data.banned" rows="2"></textarea></label>
   <VBtn type="submit" color="primary" :loading="saving">保存</VBtn> <VBtn :disabled="saving" @click="emit('close')">关闭</VBtn>
  </form>

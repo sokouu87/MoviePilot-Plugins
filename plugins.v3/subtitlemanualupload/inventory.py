@@ -8,6 +8,7 @@ import re
 import httpx
 
 from .media import LIMITED
+from . import library
 
 TYPES = ("Movie", "Episode")
 STATES = ("present", "missing", "unknown", "disc")
@@ -50,7 +51,7 @@ def item_pages(client):
     while total is None or start < total:
         response = client.get("Items", params={
             "Recursive": "true", "IsMissing": "false", "IncludeItemTypes": ",".join(TYPES),
-            "Fields": "Path,MediaSources,MediaStreams,OriginalTitle,ProductionYear",
+            "Fields": "Path,MediaSources,MediaStreams,OriginalTitle,ProductionYear,DateCreated",
             "EnableTotalRecordCount": "true", "SortBy": "SortName", "StartIndex": start, "Limit": 250,
         })
         response.raise_for_status()
@@ -173,13 +174,20 @@ def item_versions(item, server, local_paths, directories):
         streams = source.get("MediaStreams")
         if not streams and len(sources) == 1:
             streams = item.get("MediaStreams")
+        facts = classify(streams or [], path, local_paths, directories)
+        container = str(source.get("Container") or item.get("Container") or "").lower()
+        folder = container in ("bluray", "dvd") and not PurePosixPath(path).suffix
         yield {
             "server": server, "item": str(item["Id"]), "type": kind, "title": item.get("Name") or "未命名",
             "original": item.get("OriginalTitle") or "", "year": item.get("ProductionYear"),
             "series": item.get("SeriesName") or "", "series_id": item.get("SeriesId"),
             "season": item.get("ParentIndexNumber"), "episode": item.get("IndexNumber"),
-            "episode_end": item.get("IndexNumberEnd"), "file": basename(path),
-            **classify(streams or [], path, local_paths, directories),
+            "episode_end": item.get("IndexNumberEnd"), "file": basename(path), "path": library.emby_path(path),
+            "version": index, "added": library.timestamp(item.get("DateCreated"), utc=True),
+            "seconds": (source.get("RunTimeTicks") or item.get("RunTimeTicks") or 0) / 10_000_000,
+            "original_disk": folder or PurePosixPath(path).suffix.lower() == ".iso", "disk_folder": folder,
+            "disc_coverage": classify(streams or [], basename(path), set(), {}) if facts["state"] == "disc" else {},
+            **facts,
         }
 
 
@@ -198,15 +206,20 @@ def summarize(rows):
     return summary
 
 
-def scan(servers, local_paths, progress, stopped):
+def scan(servers, local_paths, progress, stopped, mappings=""):
     rows = []
     directories = {}
+    locations = {}
+    path_maps = library.directory_maps(mappings)
     for server, config in servers:
         key = config.get("apikey")
         if not key:
             raise ValueError("Emby 缺少 API 密钥")
         with httpx.Client(base_url=emby_url(config.get("host")), headers={"X-Emby-Token": key},
                           trust_env=False, timeout=40, transport=httpx.HTTPTransport(retries=1)) as client:
+            folders = client.get("Library/VirtualFolders").raise_for_status().json()
+            locations[server] = [path for folder in folders for path in folder.get("Locations", [])
+                                 if library.emby_path(path) and path != "/"]
             for items, done, total in item_pages(client):
                 if stopped():
                     return None
@@ -215,8 +228,10 @@ def scan(servers, local_paths, progress, stopped):
                 progress(f"{server} · 已读取 {done} / {total} 条")
     rows.sort(key=lambda r: (r["type"] != "Movie", (r["series"] or r["title"]).casefold(),
                              r["season"] or 0, r["episode"] or 0, r["title"].casefold(), r["file"]))
+    progress("正在核对原盘主播放列表")
     return {"created": datetime.now(timezone.utc).isoformat(timespec="seconds"), "servers": [name for name, _ in servers],
-            "summary": summarize(rows), "rows": rows}
+            "summary": summarize(rows), "rows": rows, "mapping": mappings,
+            "catalog": library.catalog(rows, locations, path_maps)}
 
 
 def page(snapshot, state, kind, query, offset):

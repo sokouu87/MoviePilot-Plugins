@@ -2,6 +2,7 @@
 import json
 import threading
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -22,10 +23,10 @@ from .media import metadata
 from .studio import BRIDGE, EMPTY, MODEL, Studio
 from .subtitles import save_json
 from .translation import DEFAULT_BANNED, read_state
-from . import inventory, task_history
+from . import disc, inventory, library, task_history
 
 DEFAULT = {"enabled": False, "auto_translate": True, "show_sidebar_nav": True, "model": MODEL, "effort": "high",
-           "whisper": "", "bridge_key": "", "banned": DEFAULT_BANNED, "manual_dirs": ""}
+           "whisper": "", "bridge_key": "", "banned": DEFAULT_BANNED, "manual_dirs": "", "emby_directory_map": ""}
 MAX_UPLOAD = 24 * 1024 * 1024
 
 
@@ -46,7 +47,7 @@ class SubtitleManualUpload(_PluginBase):
     plugin_name = "海拉鲁 AI 字幕"
     plugin_desc = "用 ChatGPT 订阅调研、精翻并审校双语字幕，支持前往 SubHD 官网下载后手动上传。"
     plugin_icon = "https://raw.githubusercontent.com/sokouu87/moviepilot-plugins/main/icons/hyrule-subtitle-master.png"
-    plugin_version = "2.2.1"
+    plugin_version = "2.3.0"
     plugin_author = "sokouu87"
     author_url = "https://github.com/sokouu87"
     plugin_config_prefix = "subtitlemanualupload_"
@@ -77,6 +78,7 @@ class SubtitleManualUpload(_PluginBase):
         self._inventory_lock = threading.Lock()
         self._inventory_progress = ""
         self._inventory_error = ""
+        self._inventory_snapshot = {}
         if not self._enabled:
             return
         legacy = self.get_config("AutoSubv3") or {}
@@ -100,6 +102,7 @@ class SubtitleManualUpload(_PluginBase):
             if candidates:
                 current["whisper"] = str(candidates[0].parent)
         self._studio = Studio(self.get_data_path(), current, key)
+        self._inventory_snapshot = read_state(self._studio.root / "subtitle_inventory.json", {})
         self._studio.start()
         self._refresh()
 
@@ -155,6 +158,7 @@ class SubtitleManualUpload(_PluginBase):
                     logger.warning("[海拉鲁 AI 字幕] 旧任务读取失败：%s", type(exc).__name__)
                 session = SessionFactory() if SessionFactory else None
                 page, previous = 1, None
+                indexed = set()
                 while not studio.stop.is_set():
                     rows = TransferHistory.list_by_page(db=session, page=page, count=250, status=True)
                     if not rows:
@@ -169,8 +173,18 @@ class SubtitleManualUpload(_PluginBase):
                         item = r.dest_fileitem or {}
                         path = Path(item.get("path") or r.dest or "")
                         if (item.get("storage") or getattr(r, "dest_storage", None) or "local") == "local":
-                            studio.register(path, metadata(path, title=r.title, year=r.year, season=r.seasons,
-                                                          episode=r.episodes, series_id=series_identity(r)))
+                            root = disc.parent(path)
+                            path = root or path
+                            if path in indexed:
+                                continue
+                            indexed.add(path)
+                            if root:
+                                name, year = disc.title(root)
+                                meta = metadata(path, title=name, year=year)
+                            else:
+                                meta = metadata(path, title=r.title, year=r.year, season=r.seasons,
+                                                episode=r.episodes, series_id=series_identity(r))
+                            studio.register(path, {**meta, "added": library.timestamp(r.date)})
                     if len(rows) < 250:
                         break
                     page += 1
@@ -181,7 +195,10 @@ class SubtitleManualUpload(_PluginBase):
                     for file in folder.rglob("*.strm"):
                         if studio.stop.is_set():
                             return
-                        studio.register(file)
+                        path = disc.parent(file) or file
+                        if path not in indexed:
+                            indexed.add(path)
+                            studio.register(path)
             except Exception as exc:
                 if self._studio is studio:
                     self._index_error = f"索引读取失败：{type(exc).__name__}"
@@ -213,15 +230,21 @@ class SubtitleManualUpload(_PluginBase):
         if not files and fallback:
             files = [fallback]
         info, meta = field(data, "mediainfo"), field(data, "meta")
+        added = library.timestamp(datetime.now(timezone.utc), utc=True)
         for file in files:
             if not isinstance(file, (str, Path)):
                 continue
             path = Path(file)
+            root = disc.parent(path)
+            if root:
+                name, year = disc.title(root)
+                studio.register(root, {**metadata(root, title=name, year=year), "added": added})
+                continue
             m = metadata(path, title=field(info, "title") or field(meta, "name"), year=field(info, "year"),
                          season=field(meta, "begin_season") if len(files) == 1 else None,
                          episode=field(meta, "begin_episode") if len(files) == 1 else None, series_id=series_identity(info))
-            key = studio.register(path, m)
-            if key and self._auto_search_on_transfer:
+            key = studio.register(path, {**m, "added": added})
+            if key and self._auto_search_on_transfer and not disc.is_original(path) and not path.is_dir():
                 studio.submit(key, automatic=True)
 
     def get_api(self):
@@ -231,7 +254,8 @@ class SubtitleManualUpload(_PluginBase):
                   ("/metadata", self.save_metadata, "POST"), ("/task_page", self.task_page, "GET"),
                   ("/task_actions", self.task_actions, "POST"),
                   ("/subtitle_inventory", self.subtitle_inventory, "GET"),
-                  ("/inventory_scan", self.inventory_scan, "POST")]
+                  ("/inventory_scan", self.inventory_scan, "POST"),
+                  ("/library_page", self.library_page, "GET"), ("/library_target", self.library_target, "POST")]
         return [{"path": p, "endpoint": f, "methods": [m], "auth": "bear", "summary": f.__doc__ or self.plugin_name} for p, f, m in routes]
 
     def targets(self, q: str = "", offset: int = 0):
@@ -249,10 +273,10 @@ class SubtitleManualUpload(_PluginBase):
         studio = self._active()
         return {"jobs": studio.history(), "configured": bool(studio.key), "model": studio.config["model"], "effort": studio.config["effort"]}
 
-    def task_page(self, state: str = "all", order: str = "desc", offset: int = 0):
+    def task_page(self, state: str = "all", order: str = "desc", offset: int = 0, target: str = ""):
         studio = self._active()
         with studio.db() as conn:
-            result = self._check(task_history.page, conn, state, order, offset)
+            result = self._check(lambda: task_history.page(conn, state, order, offset, target=target[:64]))
         return {**result, "auto": self._auto_search_on_transfer, "model": studio.config["model"],
                 "effort": studio.config["effort"], "history_error": self._history_error}
 
@@ -260,9 +284,8 @@ class SubtitleManualUpload(_PluginBase):
         return self._check(self._active().manage, body.get("action"), body.get("ids"))
 
     def subtitle_inventory(self, state: str = "missing", kind: str = "all", q: str = "", offset: int = 0):
-        studio = self._active()
-        snapshot = read_state(studio.root / "subtitle_inventory.json", {})
-        result = self._check(inventory.page, snapshot, state, kind, q[:240], max(0, offset))
+        self._active()
+        result = self._check(inventory.page, self._inventory_snapshot, state, kind, q[:240], max(0, offset))
         return {**result, "scanning": self._inventory_lock.locked(), "progress": self._inventory_progress,
                 "error": self._inventory_error}
 
@@ -281,9 +304,11 @@ class SubtitleManualUpload(_PluginBase):
             try:
                 with studio.db() as conn:
                     paths = {row["path"] for row in conn.execute("SELECT path FROM target WHERE listed=1")}
-                snapshot = inventory.scan(inventory.configured_servers(), paths, progress, studio.stop.is_set)
+                snapshot = inventory.scan(inventory.configured_servers(), paths, progress, studio.stop.is_set,
+                                          studio.config["emby_directory_map"])
                 if snapshot is not None and self._studio is studio and not studio.stop.is_set():
                     save_json(studio.root / "subtitle_inventory.json", snapshot)
+                    self._inventory_snapshot = snapshot
             except Exception as exc:
                 if self._studio is studio:
                     if isinstance(exc, httpx.HTTPStatusError):
@@ -299,6 +324,24 @@ class SubtitleManualUpload(_PluginBase):
 
         threading.Thread(target=work, name="hyrule-subtitle-inventory", daemon=True).start()
         return {"ok": True}
+
+    def library_page(self, q: str = "", state: str = "all", order: str = "desc", offset: int = 0, kind: str = "all"):
+        studio = self._active()
+        snapshot = self._inventory_snapshot
+        if snapshot.get("mapping") != studio.config["emby_directory_map"]:
+            snapshot = {}
+        if "catalog" not in snapshot and not self._inventory_error:
+            self.inventory_scan()
+        with studio.db() as conn:
+            result = self._check(library.page, conn, snapshot, q[:240], state, order, max(0, offset), kind)
+        return {**result, "scanning": self._inventory_lock.locked(), "progress": self._inventory_progress,
+                "error": self._inventory_error, "history_error": self._history_error, "configured": bool(studio.key),
+                "model": studio.config["model"], "effort": studio.config["effort"]}
+
+    def library_target(self, body: dict):
+        studio = self._active()
+        snap = self._inventory_snapshot if self._inventory_snapshot.get("mapping") == studio.config["emby_directory_map"] else {}
+        return self._check(library.prepare, studio, snap, str(body.get("id") or "")[:64])
 
     @staticmethod
     def _check(call, *args):
@@ -331,7 +374,7 @@ class SubtitleManualUpload(_PluginBase):
         path, old = self._check(studio.target, key)
         edits = {k: str(body.get(k) or "").strip()[:180] for k in ("title", "year", "season", "episode")}
         meta = metadata(path, **edits, series_id=old.get("series_id", ""))
-        studio.override_meta(key, meta)
+        studio.override_meta(key, {**old, **meta})
         return {"ok": True}
 
     async def upload(self, request: Request):

@@ -41,7 +41,7 @@
         "name": "海拉鲁 AI 字幕",
         "description": "用 ChatGPT 订阅调研、精翻和审校中英字幕；支持前往 SubHD 官网下载后返回原影片手动上传。",
         "labels": "字幕,AI翻译,ChatGPT,SubHD",
-        "version": "2.2.1",
+        "version": "2.3.0",
         "icon": "https://raw.githubusercontent.com/sokouu87/moviepilot-plugins/main/icons/hyrule-subtitle-master.png",
         "author": "sokouu87",
         "author_url": "https://github.com/sokouu87",
@@ -50,6 +50,7 @@
         "v3": false,
         "release": true,
         "history": {
+            "v2.3.0": "合并入库、Emby 和字幕任务列表；片源右侧可搜索 SubHD、上传及 AI 生成，原盘按影片目录归组。",
             "v2.2.1": "修复字幕清单页面读取和启动清点时的接口传递。",
             "v2.2.0": "新增 Emby 全片库字幕清单，按字幕状态、影片类型和片名筛选，只读清点轨道和同名外挂。",
             "v2.1.1": "侧栏默认打开与查看数据共用的任务面板，可切换到片库字幕，失败的本地任务可从断点重试。",

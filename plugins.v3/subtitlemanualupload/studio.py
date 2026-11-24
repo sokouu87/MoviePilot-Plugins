@@ -15,7 +15,7 @@ from filelock import FileLock, Timeout
 from .media import VIDEO, metadata, source_cues
 from .subtitles import MAX_SUBTITLE, parse, render, save_json, upload_member, write_file
 from .translation import DEFAULT_BANNED, read_state, translate, validated_glossary
-from . import task_history
+from . import disc, task_history
 
 MODEL = "gpt-6.2-astra"
 BRIDGE = "http://127.0.0.1:18743/v1"
@@ -67,8 +67,14 @@ class Studio:
 
     def register(self, path, meta=None):
         path = Path(path)
-        if not path.is_absolute() or path.suffix.lower() not in VIDEO or not path.is_file():
+        if not path.is_absolute():
             return None
+        folder = disc.structure(path) if path.is_dir() else None
+        if folder is None and (path.suffix.lower() not in VIDEO or not path.is_file()):
+            return None
+        if folder is not None:
+            name, year = disc.title(path)
+            meta = {**(meta or metadata(path, title=name, year=year)), "disc_folder": True}
         path = path.absolute()
         key = digest(os.path.normcase(str(path)))
         with self.db() as conn:
@@ -76,8 +82,10 @@ class Studio:
                 conn.execute("INSERT INTO target(id,path,meta) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET listed=1 WHERE target.listed=0",
                              (key, str(path), json.dumps(metadata(path))))
             else:
-                conn.execute("INSERT INTO target(id,path,meta) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET listed=1, meta=CASE WHEN target.edited=0 THEN excluded.meta ELSE target.meta END",
-                             (key, str(path), json.dumps(meta, ensure_ascii=False)))
+                conn.execute("""INSERT INTO target(id,path,meta) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET listed=1,
+                    meta=json_set(CASE WHEN target.edited=0 THEN excluded.meta ELSE target.meta END, '$.added',
+                    max(coalesce(json_extract(target.meta,'$.added'),''),coalesce(json_extract(excluded.meta,'$.added'),'')))""",
+                    (key, str(path), json.dumps(meta, ensure_ascii=False)))
         return key
 
     def override_meta(self, key, meta):
@@ -90,9 +98,13 @@ class Studio:
         if not row:
             raise ValueError("目标不存在，请刷新媒体列表")
         path = Path(row["path"])
-        if not path.is_absolute() or path.suffix.lower() not in VIDEO or not path.is_file():
+        meta = json.loads(row["meta"])
+        folder = bool(meta.get("disc_folder")) and disc.structure(path) is not None
+        if not path.is_absolute() or (not folder and (path.suffix.lower() not in VIDEO or not path.is_file())):
             raise ValueError("目标文件已移动或离线，请刷新媒体列表")
-        return path, json.loads(row["meta"])
+        if meta.get("library_root") and not path.resolve().is_relative_to(Path(meta["library_root"]).resolve()):
+            raise ValueError("媒体文件已移出可访问的库目录")
+        return path, meta
 
     def targets(self, query="", offset=0):
         pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
@@ -112,7 +124,9 @@ class Studio:
         return {"id": key, "label": label, "file": path.name, "search_url": "https://subhd.tv/search/" + quote(label, safe=""), "meta": meta}
 
     def submit(self, key, automatic=False):
-        video, _ = self.target(key)
+        video, meta = self.target(key)
+        if disc.is_original(video) or meta.get("disc_folder"):
+            raise ValueError("原盘请前往 SubHD 下载后手动上传")
         with self.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             active = conn.execute("SELECT id FROM job WHERE target=? AND state IN ('queued','running')", (key,)).fetchone()
@@ -142,21 +156,22 @@ class Studio:
         return self.root / "series" / digest(identity) / "glossary.json"
 
     def upload(self, key, filename, data, member, role):
-        video, _ = self.target(key)
+        video, meta = self.target(key)
         ext, contents = upload_member(filename, data, member)
         if not ext:
             return {"members": contents}
         rows = parse(contents, ext)
         if role not in ("eng", "zh-Hans", "zh-Hant", "zh-en"):
             raise ValueError("字幕语言无效")
-        path = video.with_name(f"{video.stem}.{role}.manual{ext}")
+        path = (video / f"{video.name}.{role}.manual{ext}" if meta.get("disc_folder")
+                else video.with_name(f"{video.stem}.{role}.manual{ext}"))
         # 英文稿有明确用途，下次翻译优先读取。人工成品永远单独保存。
         try:
             write_file(path, contents, mode=0o600 | (video.stat().st_mode & 0o044))
         except FileExistsError:
             if path.is_symlink() or path.read_bytes() != contents:
                 raise ValueError(f"已有不同的同名字幕，已保留原文件：{path.name}")
-        if role == "eng":
+        if role == "eng" and not (meta.get("disc_folder") or disc.is_original(video)):
             with self.db() as conn:
                 conn.execute("INSERT OR REPLACE INTO manuscript(target,extension) VALUES (?,?)", (key, ext))
         return {"file": path.name, "cues": len(rows)}
@@ -198,6 +213,8 @@ class Studio:
     def run_job(self, job):
         key = job["target"]
         video, meta = self.target(key)
+        if disc.is_original(video) or meta.get("disc_folder"):
+            return "skipped", "原盘请使用手动字幕", {}
         number = job["id"]
         variant = f".r{number}" if job["rerun_of"] is not None else ""
         out = [video.with_name(f"{video.stem}{variant}.zh-en.ai.{ext}") for ext in ("ass", "srt")]
@@ -272,9 +289,12 @@ class Studio:
     def retry(self, number):
         with self.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT target FROM job WHERE id=? AND state='failed' AND hidden=0 AND legacy_id IS NULL", (number,)).fetchone()
+            row = conn.execute("""SELECT j.target,t.path FROM job j JOIN target t ON t.id=j.target
+                WHERE j.id=? AND j.state='failed' AND j.hidden=0 AND j.legacy_id IS NULL""", (number,)).fetchone()
             if not row:
                 raise ValueError("仅失败的任务可续跑")
+            if disc.is_original(row["path"]):
+                raise ValueError("原盘请使用手动字幕")
             if conn.execute("SELECT 1 FROM job WHERE target=? AND state IN ('running','queued')", (row["target"],)).fetchone():
                 raise ValueError("同一目标已有任务")
             conn.execute("UPDATE job SET state='queued',detail='',finished='',cancel_requested=0,publishing=0 WHERE id=?", (number,))

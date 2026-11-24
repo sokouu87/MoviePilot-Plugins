@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .media import VIDEO, metadata
+from . import disc
 
 ENDED = {"done", "failed", "skipped", "cancelled"}
 OLD_STATE = {"completed": "done", "failed": "failed", "ignored": "skipped", "no_audio": "skipped", "cancelled": "cancelled"}
@@ -75,7 +76,26 @@ def import_finished(conn, records):
                       SOURCE.get(str(raw.get("source")), "旧版联动"), str(ident)))
 
 
-def page(conn, state="all", order="desc", offset=0, limit=100, native_only=False):
+def describe(row):
+    body = {k: row[k] for k in ("id", "target", "state", "detail", "created", "finished", "origin", "path")}
+    report = json.loads(row["report"])
+    report.setdefault("source", "自动选择")
+    body.update(file=Path(row["path"]).name, legacy=row["legacy_id"] is not None, cancelling=bool(row["cancel_requested"]),
+                publishing=bool(row["publishing"]), report=report)
+    return body
+
+
+def by_target(conn):
+    records = {}
+    rows = conn.execute("""SELECT j.*,t.path FROM job j JOIN target t ON t.id=j.target WHERE j.hidden=0
+                         ORDER BY j.state IN ('queued','running') DESC,j.created DESC,j.id DESC""")
+    for row in rows:
+        job, count = records.get(row["target"], (None, 0))
+        records[row["target"]] = (job or describe(row), count + 1)
+    return records
+
+
+def page(conn, state="all", order="desc", offset=0, limit=100, native_only=False, target=""):
     if state not in ENDED | {"all", "running", "queued"} or order not in ("asc", "desc"):
         raise ValueError("筛选或排序无效")
     if not conn.in_transaction:
@@ -83,6 +103,9 @@ def page(conn, state="all", order="desc", offset=0, limit=100, native_only=False
     cond, params = ["j.hidden=0"], []
     if native_only:
         cond.append("j.legacy_id IS NULL")
+    if target:
+        cond.append("j.target=?")
+        params.append(target)
     counts = {r[0]: r[1] for r in conn.execute("SELECT j.state,COUNT(*) FROM job j WHERE " + " AND ".join(cond) + " GROUP BY j.state")}
     if state != "all":
         cond.append("j.state=?")
@@ -92,14 +115,7 @@ def page(conn, state="all", order="desc", offset=0, limit=100, native_only=False
              f" ORDER BY j.created {sort},j.id {sort} LIMIT ? OFFSET ?")
     limit = min(max(1, limit), 200)
     rows = conn.execute(query, (*params, limit + 1, min(max(0, offset), 2**63 - 1))).fetchall()
-    items = []
-    for row in rows[:limit]:
-        body = {k: row[k] for k in ("id", "target", "state", "detail", "created", "finished", "origin", "path")}
-        report = json.loads(row["report"])
-        report.setdefault("source", "自动选择")
-        body.update(file=Path(row["path"]).name, legacy=row["legacy_id"] is not None, cancelling=bool(row["cancel_requested"]),
-                    publishing=bool(row["publishing"]), report=report)
-        items.append(body)
+    items = [describe(row) for row in rows[:limit]]
     return {"jobs": items, "counts": counts, "total": sum(counts.values()), "more": len(rows)>limit}
 
 
@@ -124,7 +140,9 @@ def operate(conn, action, ids):
             conn.execute("UPDATE job SET hidden=1 WHERE id=?", (i,))
         elif action == "restart" and row["state"] in ENDED:
             path = Path(row["path"])
-            if not path.is_absolute() or path.suffix.lower() not in VIDEO:
+            if disc.is_original(path):
+                reason = "原盘使用 SubHD 或手动字幕"
+            elif not path.is_absolute() or path.suffix.lower() not in VIDEO:
                 reason = "当前路径或媒体格式不支持翻译"
             elif not path.is_file():
                 reason = "媒体文件已移动或离线"

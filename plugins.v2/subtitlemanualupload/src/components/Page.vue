@@ -1,5 +1,6 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import MediaDialog from './MediaDialog.vue'
 
 const props = defineProps({
   api: Object,
@@ -8,39 +9,32 @@ const props = defineProps({
   show_close: { type: Boolean, default: true },
 })
 const emit = defineEmits(['close', 'switch'])
-const states = {
-  all: ['总数', 'primary'], queued: ['等待', 'info'], running: ['处理中', 'warning'],
-  done: ['完成', 'success'], failed: ['失败', 'error'], cancelled: ['已取消', 'default'], skipped: ['已跳过', 'default'],
+const filters = {
+  all: ['全部', 'primary'], recent: ['最近入库', 'primary'], present: ['已有中文', 'success'], missing: ['缺中文', 'warning'],
+  unknown: ['待确认', 'default'], disc: ['原盘', 'secondary'],
+  queued: ['等待', 'info'], running: ['处理中', 'warning'], done: ['已完成', 'success'],
+  failed: ['失败', 'error'], cancelled: ['已取消', 'default'], skipped: ['已跳过', 'default'],
 }
 const actions = {
-  cancel: { name: '取消', color: 'warning', icon: 'mdi-cancel', result: '已提交取消请求' },
-  restart: { name: '重新生成', color: 'primary', icon: 'mdi-restart', result: '已提交重新生成' },
-  delete: { name: '删除', color: 'error', icon: 'mdi-delete-outline', result: '已删除任务记录' },
+  cancel: { label: '取消', color: 'warning', result: '已提交取消请求' },
+  restart: { label: '重新生成', color: 'primary', result: '已提交重新生成' },
+  delete: { label: '删除', color: 'error', result: '已删除任务记录' },
 }
-const pageSize = 100
-const stampFormat = new Intl.DateTimeFormat('sv-SE', { dateStyle: 'short', timeStyle: 'medium', hourCycle: 'h23' })
-const data = ref({ jobs: [], counts: {}, total: 0 })
-const filter = ref('all')
-const order = ref('desc')
-const offset = ref(0)
-const selected = ref([])
-const pending = ref(null)
-const busy = ref(false)
-const loading = ref(false)
-const loadError = ref('')
-const actionError = ref('')
-const notice = ref('')
-const picked = computed(() => data.value.jobs.filter(row => selected.value.includes(row.id)))
-const allPicked = computed(() => picked.value.length > 0 && picked.value.length === data.value.jobs.length)
-let requestId = 0
-let timer
+const data = ref({ rows: [], counts: {}, matches: 0, page_size: 50 })
+const query = ref(''), filter = ref('all'), kind = ref('all'), order = ref('desc'), offset = ref(0)
+const selected = ref([]), pending = ref(null), upload = ref(null), history = ref(null)
+const loading = ref(false), busy = ref(false), loadError = ref(''), actionError = ref(''), notice = ref('')
+const selectable = computed(() => data.value.rows.filter(row => row.task).map(row => row.task.id))
+const picked = computed(() => data.value.rows.filter(row => row.task && selected.value.includes(row.task.id)))
+const allPicked = computed(() => selectable.value.length > 0 && selected.value.length === selectable.value.length)
+let requestNumber = 0
+let timer, debounce
 
-async function api(method, endpoint, body) {
-  const result = await props.api[method](`plugin/${props.pluginId}/${endpoint}`, body)
-  const payload = result?.data ?? result
-  if (result?.success === false || payload?.success === false) {
-    throw new Error(payload?.message || result?.message || '操作失败')
-  }
+async function call(method, endpoint, body) {
+  const response = await props.api[method](`plugin/${props.pluginId}/${endpoint}`, body)
+  const payload = response?.data ?? response
+  if (response?.success === false || payload?.success === false)
+    throw new Error(payload?.message || response?.message || '操作失败')
   return payload?.data ?? payload
 }
 
@@ -49,110 +43,148 @@ function errorText(error) {
 }
 
 async function load() {
-  const id = ++requestId
+  const number = ++requestNumber
   loading.value = true
   try {
-    const params = new URLSearchParams({ state: filter.value, order: order.value, offset: offset.value })
-    const result = await api('get', 'task_page?' + params)
-    if (id !== requestId) return
-    if (!result.jobs.length && offset.value) {
-      const size = filter.value === 'all' ? result.total : result.counts[filter.value] || 0
-      offset.value = Math.floor(Math.max(0, size - 1) / pageSize) * pageSize
+    const params = new URLSearchParams({ q: query.value, state: filter.value, kind: kind.value, order: order.value, offset: offset.value })
+    const result = await call('get', 'library_page?' + params)
+    if (number !== requestNumber) return
+    if (offset.value && !result.rows.length) {
+      offset.value = 0
       return load()
     }
     data.value = result
-    selected.value = selected.value.filter(key => result.jobs.some(row => row.id === key))
-    loadError.value = result.history_error || ''
+    selected.value = selected.value.filter(id => selectable.value.includes(id))
+    loadError.value = result.error || result.history_error || ''
   } catch (error) {
-    if (id === requestId) loadError.value = errorText(error)
+    if (number === requestNumber) loadError.value = errorText(error)
   } finally {
-    if (id === requestId) loading.value = false
+    if (number === requestNumber) loading.value = false
   }
 }
 
-function selectView(state, sort, start = 0) {
+function select(state, direction = order.value, from = 0) {
+  clearTimeout(debounce)
   filter.value = state
-  order.value = sort
-  offset.value = start
+  order.value = direction
+  offset.value = from
   selected.value = []
-  notice.value = ''
-  actionError.value = ''
-  data.value = { ...data.value, jobs: [] }
   load()
 }
 
+function active(job) {
+  return job?.state === 'queued' || job?.state === 'running'
+}
+
 function can(action, row) {
-  const active = row.state === 'queued' || row.state === 'running'
-  return action === 'cancel' ? active && !row.cancelling && !row.publishing : !active
+  const job = row.task
+  if (!job) return false
+  if (action === 'cancel') return active(job) && !job.cancelling && !job.publishing
+  if (action === 'restart') return !row.original && row.available && !active(job)
+  return !active(job)
+}
+
+async function act(fn) {
+  if (busy.value) return
+  busy.value = true
+  actionError.value = notice.value = ''
+  try {
+    await fn()
+  } catch (error) {
+    actionError.value = errorText(error)
+  } finally {
+    busy.value = false
+  }
 }
 
 function request(action, rows) {
-  const ids = rows.filter(row => can(action, row)).map(row => row.id)
-  if (!ids.length || busy.value) return
+  const ids = rows.filter(row => can(action, row)).map(row => row.task.id)
+  if (!ids.length) return
   if (action === 'cancel') return perform({ action, ids })
   pending.value = { action, ids }
 }
 
-async function perform(operation) {
-  if (!operation || busy.value) return
+function perform(operation) {
   pending.value = null
-  busy.value = true
-  actionError.value = ''
-  notice.value = ''
-  try {
-    const result = await api('post', 'task_actions', operation)
-    const skipped = result.skipped.map(item => '#' + item.id + ' ' + item.reason)
-    notice.value = `${actions[operation.action].result} ${result.changed.length} 条`
+  return act(async () => {
+    const result = await call('post', 'task_actions', operation)
+    const skipped = result.skipped.map(item => `#${item.id} ${item.reason}`)
+    notice.value = actions[operation.action].result + ` ${result.changed.length} 条`
     if (skipped.length) notice.value += `，跳过 ${skipped.length} 条（${skipped.slice(0, 3).join('、')}）`
     selected.value = []
     await load()
-  } catch (error) {
-    actionError.value = errorText(error)
-  } finally {
-    busy.value = false
-  }
+  })
 }
 
-async function retry(row) {
-  if (busy.value) return
-  busy.value = true
-  actionError.value = ''
-  notice.value = ''
-  try {
-    await api('post', 'retry', { id: row.id })
-    notice.value = `任务 #${row.id} 已进入队列`
+function generate(row) {
+  if (row.task && (row.task.state !== 'failed' || row.task.legacy)) return request('restart', [row])
+  return act(async () => {
+    if (row.task?.state === 'failed') {
+      await call('post', 'retry', { id: row.task.id })
+      notice.value = `任务 #${row.task.id} 已进入队列`
+    } else {
+      const ready = await call('post', 'library_target', { id: row.id })
+      const result = await call('post', 'translate', { target: ready.target })
+      notice.value = `任务 #${result.id} 已进入队列`
+    }
     await load()
-  } catch (error) {
-    actionError.value = errorText(error)
-  } finally {
-    busy.value = false
-  }
+  })
 }
 
-function utc(value) {
-  return value.replace(' ', 'T') + 'Z'
+function refresh() {
+  return act(async () => {
+    await call('post', 'refresh', {})
+    await call('post', 'inventory_scan', {})
+    await load()
+  })
 }
 
-function when(value) {
-  const date = new Date(utc(value))
-  return Number.isNaN(date.valueOf()) ? value : stampFormat.format(date)
+function loadHistory(row, at = 0) {
+  return act(async () => {
+    const result = await call('get', `task_page?target=${encodeURIComponent(row.target)}&offset=${at}`)
+    history.value = { row, at, ...result }
+  })
 }
 
-function pathText(path) {
-  return path.replace(/([\\/])((?:Season[ _.-]*\d+|S\d{1,2})(?:[\\/]|$))/i, '$1\n$2')
+function aiLabel(row) {
+  if (active(row.task)) return row.task.state === 'queued' ? '已排队' : '生成中'
+  if (row.task?.state === 'failed' && !row.task.legacy) return '从断点重试'
+  return row.task ? '重新生成' : 'AI 生成'
 }
 
-function hasReview(report) {
-  return report.sources?.length || report.ambiguities?.length || Object.keys(report.warnings || {}).length
+function badges(row) {
+  const result = []
+  const job = row.task
+  const source = job?.report?.source || ''
+  const files = job?.report?.files || []
+  if (row.original) result.push(['原盘', 'secondary'])
+  if (row.chinese.includes('embedded') || /内封|内嵌/.test(source)) result.push(['视频内嵌字幕', 'info'])
+  if (row.chinese.includes('external')) result.push(['外挂中文', 'success'])
+  if (job?.state === 'done' && (files.some(f => f.endsWith('.zh-en.ai.ass')) && files.some(f => f.endsWith('.zh-en.ai.srt'))
+      || /生成双语 ASS 和 SRT/.test(job.detail))) result.push(['已生成双语 ASS 和 SRT', 'success'])
+  if (job?.state === 'failed' && /缺少英文字幕|无英文字幕|没有英文字幕|未提取到可用外挂/.test(job.detail))
+    result.push(['缺少英文字幕', 'warning'])
+  if (row.status === 'missing') result.push(['缺中文字幕', 'warning'])
+  if (row.status === 'unknown' && row.emby) result.push(['字幕待确认', 'default'])
+  return result
 }
 
+function when(value, utc = false) {
+  const date = new Date(utc ? value.replace(' ', 'T') + 'Z' : value)
+  return Number.isNaN(date.valueOf()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+watch(query, () => {
+  clearTimeout(debounce)
+  debounce = setTimeout(() => select(filter.value), 230)
+})
 onMounted(() => {
   load()
   timer = setInterval(() => {
-    if (!document.hidden && !busy.value && !loading.value && !pending.value) load()
-  }, 8000)
+    if (!document.hidden && !busy.value && !loading.value && !pending.value && !upload.value && !history.value) load()
+  }, 7000)
 })
-onBeforeUnmount(() => { ++requestId; clearInterval(timer) })
+onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debounce) })
 </script>
 
 <template>
@@ -160,83 +192,118 @@ onBeforeUnmount(() => { ++requestId; clearInterval(timer) })
     <header class="toolbar">
       <div class="heading">
         <h2>海拉鲁 AI 字幕</h2>
-        <p>{{ data.auto === undefined ? '字幕任务' : data.auto ? '已接管入库自动翻译' : '手动翻译' }}<template v-if="data.model"> · {{ data.model }} · {{ data.effort }}</template></p>
+        <p v-if="data.model">{{ data.model }} · {{ data.effort }}</p>
       </div>
-      <div class="tools" role="group" aria-label="任务操作">
-        <VBtn color="primary" variant="tonal" :prepend-icon="order === 'desc' ? 'mdi-sort-clock-descending' : 'mdi-sort-clock-ascending'"
-              @click="selectView(filter, order === 'desc' ? 'asc' : 'desc')">{{ order === 'desc' ? '最新在前' : '最早在前' }}</VBtn>
-        <VBtn color="primary" variant="tonal" prepend-icon="mdi-checkbox-multiple-marked-outline" :disabled="!data.jobs.length || busy"
-              @click="selected = allPicked ? [] : data.jobs.map(row => row.id)">
-          {{ allPicked ? '取消全选' : (offset || data.more ? '全选本页' : '全选') }}
+      <div class="tools">
+        <VBtn size="small" color="primary" variant="tonal" :disabled="busy" @click="select(filter, order === 'desc' ? 'asc' : 'desc')">
+          {{ order === 'desc' ? '最新在前' : '最早在前' }}
         </VBtn>
-        <VBtn v-for="(spec, action) in actions" :key="action" :color="spec.color" variant="tonal" :prepend-icon="spec.icon"
-              :disabled="busy || !picked.some(row => can(action, row))" @click="request(action, picked)">批量{{ spec.name }}</VBtn>
-        <VBtn icon="mdi-refresh" color="primary" variant="text" aria-label="刷新任务" title="刷新任务" :loading="loading" :disabled="busy" @click="load" />
-        <VBtn v-if="show_switch" icon="mdi-cog-outline" color="primary" variant="text" aria-label="插件设置" title="插件设置" @click="emit('switch')" />
-        <VBtn v-if="show_close" icon="mdi-close" color="primary" variant="text" aria-label="关闭" title="关闭" @click="emit('close')" />
+        <VBtn size="small" color="primary" variant="tonal" :disabled="busy || data.scanning" @click="refresh">刷新片库</VBtn>
+        <VBtn v-if="show_switch" icon="mdi-cog-outline" size="small" variant="text" aria-label="插件设置" @click="emit('switch')" />
+        <VBtn v-if="show_close" icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="emit('close')" />
       </div>
     </header>
+
     <main class="content">
-      <nav class="filters" aria-label="按任务状态筛选">
-        <VChip v-for="([label, color], state) in states" :key="state" tag="button" type="button" size="small" :color="color"
-               :variant="filter === state ? 'flat' : 'tonal'" :aria-pressed="filter === state" @click="selectView(state, order)">
-          {{ label }} {{ state === 'all' ? data.total : data.counts[state] || 0 }}
+      <div class="search">
+        <input v-model="query" type="search" autocomplete="off" aria-label="搜索最近入库和 Emby 片库" placeholder="搜索最近入库和 Emby 片库">
+        <select v-model="kind" aria-label="筛选媒体类型" @change="select(filter)">
+          <option value="all">全部类型</option><option value="Movie">电影</option><option value="Episode">剧集</option>
+        </select>
+        <span v-if="query.trim()">{{ data.matches }} 个结果</span>
+      </div>
+      <nav class="filters" aria-label="筛选片源和任务">
+        <VChip v-for="([label, color], state) in filters" :key="state" tag="button" type="button" size="small" :color="color"
+               :variant="filter === state ? 'flat' : 'tonal'" :aria-pressed="filter === state" @click="select(state)">
+          {{ label }} {{ data.counts[state] || 0 }}
         </VChip>
       </nav>
+      <div v-if="selectable.length" class="batch" role="group" aria-label="批量管理任务">
+        <VBtn size="small" variant="text" :disabled="busy" @click="selected = allPicked ? [] : [...selectable]">
+          {{ allPicked ? '取消全选' : '全选本页任务' }}
+        </VBtn>
+        <template v-if="picked.length">
+          <VBtn v-for="(spec, action) in actions" :key="action" size="small" variant="tonal" :color="spec.color"
+                :disabled="busy || !picked.some(row => can(action, row))" @click="request(action, picked)">批量{{ spec.label }}</VBtn>
+        </template>
+      </div>
+      <p v-if="data.scanning" class="feedback" role="status">{{ data.progress || '正在读取 Emby 片库…' }}</p>
       <p v-if="loadError || actionError" class="feedback error-text" role="alert">{{ actionError || loadError }}</p>
       <p v-if="notice" class="feedback" role="status">{{ notice }}</p>
-      <p v-if="!data.jobs.length && !loadError" class="empty">{{ loading ? '正在读取任务…' : filter === 'all' ? '暂无字幕任务' : '当前筛选暂无任务' }}</p>
+      <p v-if="!data.rows.length && !loadError" class="empty">{{ loading ? '正在读取…' : '当前筛选没有片源' }}</p>
+
       <div class="cards">
-        <article v-for="row in data.jobs" :key="row.id" class="task" :class="{ marked: selected.includes(row.id) }">
-          <label class="pick"><input v-model="selected" type="checkbox" :value="row.id" :aria-label="'选择 ' + row.file"></label>
+        <article v-for="row in data.rows" :key="row.id" class="task" :class="{ marked: selected.includes(row.task?.id) }">
+          <label class="pick"><input v-if="row.task" v-model="selected" type="checkbox" :value="row.task.id" :aria-label="'选择任务 ' + row.title"></label>
           <div class="body">
             <div class="title">
-              <strong>{{ row.file }}</strong>
-              <VChip size="x-small" variant="tonal" :color="states[row.state]?.[1]">
-                {{ row.cancelling ? '取消中' : row.state === 'done' ? '已完成' : states[row.state]?.[0] || row.state }}
+              <strong>{{ row.title || row.file }}</strong>
+              <VChip v-if="row.task" size="x-small" variant="tonal" :color="filters[row.task.state]?.[1]">
+                {{ row.task.cancelling ? '取消中' : filters[row.task.state]?.[0] }}
               </VChip>
             </div>
-            <div class="path">{{ pathText(row.path) }}</div>
-            <div class="meta">
-              <span>{{ row.origin }}<template v-if="row.legacy"> · 联动版历史</template></span>
-              <span v-if="row.report.source">{{ row.report.source }}</span>
-              <span v-if="row.report.model">{{ row.report.model }}</span>
-              <span v-if="row.report.cues">{{ row.report.cues }} 轴</span>
-              <span v-if="row.report.files?.length">输出：{{ row.report.files.join('、') }}</span>
-              <time v-if="row.created" :datetime="utc(row.created)" title="创建时间">{{ when(row.created) }}</time>
-              <time v-if="row.finished" :datetime="utc(row.finished)" title="结束时间">{{ when(row.finished) }}</time>
-              <time v-else-if="row.report.rendered" :datetime="utc(row.report.rendered)">译稿生成时间 {{ when(row.report.rendered) }}</time>
+            <div v-if="badges(row).length" class="badges">
+              <VChip v-for="([label,color]) in badges(row)" :key="label" size="small" variant="tonal" :color="color">{{ label }}</VChip>
             </div>
-            <p class="detail" :class="{ 'error-text': row.state === 'failed' }">{{ row.cancelling ? '正在取消，等待当前步骤结束' : row.detail }}</p>
-            <details v-if="hasReview(row.report)">
-              <summary>审校记录</summary>
-              <p v-for="(words, id) in row.report.warnings" :key="id">第 {{ id }} 轴 · {{ words.join('、') }}</p>
-              <p v-for="a in row.report.ambiguities" :key="a.id">第 {{ a.id }} 轴 · {{ a.options.join(' / ') }} · {{ a.reason }}</p>
-              <div v-for="url in row.report.sources" :key="url"><a :href="url" target="_blank" rel="noopener noreferrer">{{ url }}</a></div>
+            <div class="path" v-if="row.original && row.directory">影片目录 {{ row.directory }}</div>
+            <div class="path" v-else-if="row.file">{{ row.file }}</div>
+            <div class="meta">
+              <span>{{ row.recent ? 'MoviePilot 入库' : '' }}{{ row.recent && row.emby ? ' · ' : '' }}{{ row.emby ? 'Emby' : '' }}</span>
+              <time v-if="row.added">{{ when(row.added) }}</time>
+              <span v-if="row.task?.origin">{{ row.task.origin }}</span>
+            </div>
+            <p v-if="row.reason || row.task?.detail" class="detail" :class="{ 'error-text': row.task?.state === 'failed' }">
+              {{ row.task?.detail || row.reason }}
+            </p>
+            <details v-if="row.task">
+              <summary>任务 #{{ row.task.id }} · 字幕与审校记录</summary>
+              <p v-if="row.task.report.source">{{ row.task.report.source }}</p>
+              <p v-if="row.task.created">{{ when(row.task.created, true) }}<template v-if="row.task.finished"> · 完成 {{ when(row.task.finished, true) }}</template></p>
+              <p v-for="file in row.task.report.files" :key="file">{{ file }}</p>
+              <p v-for="(issues,id) in row.task.report.warnings" :key="id">第 {{ id }} 轴 · {{ issues.join('、') }}</p>
+              <p v-for="item in row.task.report.ambiguities" :key="item.id">第 {{ item.id }} 轴 · {{ item.options.join(' / ') }} · {{ item.reason }}</p>
+              <div v-for="url in row.task.report.sources" :key="url">
+                <a v-if="/^https?:\/\//i.test(url)" :href="url" target="_blank" rel="noopener noreferrer">{{ url }}</a>
+              </div>
+              <VBtn v-if="row.task_count > 1" size="small" variant="text" @click="loadHistory(row)">历史任务 {{ row.task_count }}</VBtn>
             </details>
           </div>
           <div class="actions">
-            <VBtn v-if="row.state === 'failed' && !row.legacy" size="small" color="primary" variant="tonal"
-                  :disabled="busy" @click="retry(row)">从断点重试</VBtn>
-            <VBtn v-for="(spec, action) in actions" :key="action" size="small" :color="spec.color" variant="tonal"
-                  :disabled="busy || !can(action, row)" @click="request(action, [row])">{{ spec.name }}</VBtn>
+            <VBtn size="small" variant="tonal" :href="row.search_url" target="_blank" rel="noopener noreferrer">SubHD ↗</VBtn>
+            <VBtn size="small" variant="tonal" color="primary" :disabled="busy" @click="upload = row">上传</VBtn>
+            <VBtn v-if="!row.original" size="small" variant="tonal" color="primary"
+                  :disabled="busy || !data.configured || !row.available || active(row.task)" @click="generate(row)">{{ aiLabel(row) }}</VBtn>
+            <VBtn v-if="can('cancel', row)" size="small" variant="text" color="warning" :disabled="busy" @click="request('cancel', [row])">取消</VBtn>
           </div>
         </article>
       </div>
-      <nav v-if="offset || data.more" class="pages" aria-label="任务分页">
-        <VBtn size="small" variant="tonal" :disabled="!offset || loading" @click="selectView(filter, order, offset - pageSize)">上一页</VBtn>
-        <span>第 {{ offset / pageSize + 1 }} 页</span>
-        <VBtn size="small" variant="tonal" :disabled="!data.more || loading" @click="selectView(filter, order, offset + pageSize)">下一页</VBtn>
+      <nav v-if="offset || data.more" class="pages" aria-label="片源分页">
+        <VBtn size="small" variant="tonal" :disabled="!offset || loading" @click="select(filter, order, offset - data.page_size)">上一页</VBtn>
+        <span>第 {{ offset / data.page_size + 1 }} 页</span>
+        <VBtn size="small" variant="tonal" :disabled="!data.more || loading" @click="select(filter, order, offset + data.page_size)">下一页</VBtn>
       </nav>
     </main>
+
+    <MediaDialog v-if="upload" :row="upload" :call="call" @close="upload = null" @changed="load" />
     <VDialog :model-value="Boolean(pending)" max-width="420" aria-labelledby="hyrule-confirm" @update:model-value="open => { if (!open) pending = null }">
       <VCard v-if="pending">
-        <VCardTitle id="hyrule-confirm">{{ actions[pending.action].name }} {{ pending.ids.length }} 条任务？</VCardTitle>
-        <VCardText>{{ pending.action === 'delete' ? '移除所选任务记录。视频和字幕文件会保留。' : '用当前订阅模型重新翻译。新字幕将使用独立文件名。' }}</VCardText>
-        <VCardActions>
-          <VSpacer />
-          <VBtn variant="text" @click="pending = null">返回</VBtn>
-          <VBtn variant="tonal" :color="actions[pending.action].color" @click="perform(pending)">{{ actions[pending.action].name }}</VBtn>
+        <VCardTitle id="hyrule-confirm">{{ actions[pending.action].label }} {{ pending.ids.length }} 条任务？</VCardTitle>
+        <VCardText>{{ pending.action === 'delete' ? '移除任务记录，保留视频和字幕文件。' : '使用当前订阅模型翻译，字幕另存为独立版本。' }}</VCardText>
+        <VCardActions><VSpacer /><VBtn @click="pending = null">返回</VBtn>
+          <VBtn :color="actions[pending.action].color" @click="perform(pending)">{{ actions[pending.action].label }}</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+    <VDialog :model-value="Boolean(history)" max-width="640" aria-labelledby="hyrule-history" @update:model-value="open => { if (!open) history = null }">
+      <VCard v-if="history">
+        <VCardTitle id="hyrule-history">{{ history.row.title }} · 历史任务</VCardTitle>
+        <VCardText>
+          <p v-for="job in history.jobs" :key="job.id">#{{ job.id }} · {{ filters[job.state]?.[0] }} · {{ job.detail }}</p>
+        </VCardText>
+        <VCardActions><VSpacer />
+          <VBtn v-if="history.at" @click="loadHistory(history.row, history.at - 100)">上一页</VBtn>
+          <VBtn v-if="history.more" @click="loadHistory(history.row, history.at + 100)">下一页</VBtn>
+          <VBtn @click="history = null">关闭</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>
@@ -247,7 +314,7 @@ onBeforeUnmount(() => { ++requestId; clearInterval(timer) })
 .records {
   --paper: rgb(var(--v-theme-surface, 255, 255, 255));
   --muted: rgba(var(--v-theme-on-surface, 38, 38, 47), .72);
-  --line: rgba(var(--v-border-color, 92, 92, 110), .16);
+  --line: rgba(var(--v-border-color, 92, 92, 110), .18);
   min-height: 100%;
   color: rgb(var(--v-theme-on-surface, 38, 38, 47));
   background: rgb(var(--v-theme-background, 244, 244, 248));
@@ -257,52 +324,66 @@ onBeforeUnmount(() => { ++requestId; clearInterval(timer) })
   top: 0;
   z-index: 2;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 6px 10px;
-  padding: 6px 8px 6px 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 14px;
   border-bottom: 1px solid var(--line);
   background: var(--paper);
 }
-.heading h2 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.35; }
-.heading p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
-.tools, .actions, .filters, .title, .meta, .pages { display: flex; align-items: center; flex-wrap: wrap; }
-.tools { gap: 2px; }
-.content { padding: 18px; }
-.filters { gap: 8px; margin-bottom: 14px; }
-.feedback { margin: 0 0 12px; }
-.cards { display: grid; gap: 10px; }
-.task {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) auto;
+.heading h2 { margin: 0; font-size: 20px; line-height: 1.35; }
+.heading p { margin: 0; color: var(--muted); font-size: 12px; }
+.tools, .search, .filters, .batch, .badges, .title, .actions, .meta, .pages {
+  display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.content { padding: 16px; }
+.search { margin-bottom: 12px; }
+.search input { flex: 1 1 18rem; }
+.search input, .search select {
+  min-width: 0;
+  padding: .62rem .86rem;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--paper);
+  color: inherit;
+  font: inherit;
 }
-.task.marked { border-color: rgba(var(--v-theme-primary, 128, 78, 238), .5); }
-.pick { display: flex; align-items: center; min-height: 36px; cursor: pointer; }
-.pick input { width: 18px; height: 18px; accent-color: rgb(var(--v-theme-primary, 128, 78, 238)); }
+.search span, .pages span { color: var(--muted); font-size: 13px; }
+.filters { margin-bottom: 12px; }
+.batch { margin: 0 0 8px; }
+.cards { display: grid; gap: 10px; }
+.task {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--paper);
+}
+.task.marked { border-color: rgba(var(--v-theme-primary, 128, 78, 238), .55); }
+.pick { display: grid; place-items: center; min-height: 34px; }
+.pick input { width: 17px; height: 17px; accent-color: rgb(var(--v-theme-primary, 128, 78, 238)); }
 .body { min-width: 0; overflow-wrap: anywhere; }
-.title { gap: 8px; }
-.title strong { font-size: 16px; line-height: 1.45; }
-.path { max-width: 78ch; margin-top: 6px; color: var(--muted); font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
-.meta { gap: 2px 10px; margin-top: 6px; color: var(--muted); font-size: 12px; }
-.detail, .body details { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.title strong { font-size: 16px; }
+.badges, .path, .meta, .detail, .body details { margin-top: 5px; }
+.path, .meta, .detail, .body details { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .body summary { cursor: pointer; }
 .body a { color: rgb(var(--v-theme-primary, 128, 78, 238)); }
-.records .error-text { color: rgb(var(--v-theme-error, 209, 47, 58)); }
-.actions { gap: 8px; justify-content: flex-end; }
-.pages { justify-content: center; gap: 10px; margin-top: 14px; }
-.empty { padding: 24px; text-align: center; color: var(--muted); }
+.error-text { color: rgb(var(--v-theme-error, 209, 47, 58)); }
+.actions { justify-content: flex-end; }
+.feedback { margin: 8px 0; }
+.pages { justify-content: center; margin-top: 14px; }
+.empty { text-align: center; padding: 24px; }
 @media (max-width: 800px) {
-  .toolbar { position: static; padding: 10px 12px; }
-  .content { padding: 12px; }
-  .tools { gap: 4px; }
-  .task { grid-template-columns: 26px minmax(0, 1fr); gap: 6px; padding: 11px; }
+  .toolbar { position: static; }
+  .content { padding: 10px; }
+  .task { grid-template-columns: 22px minmax(0, 1fr); gap: 6px; padding: 10px; }
   .task .actions { grid-column: 2; justify-content: flex-start; }
 }
 </style>
