@@ -40,7 +40,7 @@
         "name": "海拉鲁 AI 字幕",
         "description": "用 ChatGPT 订阅调研、精翻和审校中英字幕；支持前往 SubHD 官网下载后返回原影片手动上传。",
         "labels": "字幕,AI翻译,ChatGPT,SubHD",
-        "version": "2.0.0",
+        "version": "2.0.1",
         "icon": "https://raw.githubusercontent.com/sokouu87/moviepilot-plugins/main/icons/hyrule-subtitle-master.png",
         "author": "sokouu87",
         "author_url": "https://github.com/sokouu87",
@@ -49,6 +49,7 @@
         "v3": false,
         "release": true,
         "history": {
+            "v2.0.1": "逐轴检查对白中的中英文音效括注并定向重译，清理 ASS 注释，保留正常括号说明。",
             "v2.0.0": "重写为独立 AI 精翻插件。新增订阅联网调研、三阶段翻译、ASS/SRT 双输出与 SubHD 官网手动上传。",
             "v0.1.104": "兼容 MoviePilot 网页对 SubHD 核验响应的 JSON 字符串封装。",
             "v0.1.103": "识别 SubHD 下载接口的 Turnstile 核验状态；网页显示验证和上传入口并保留字幕目标，MPLite 可接续人工验证。",

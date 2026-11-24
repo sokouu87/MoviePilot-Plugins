@@ -28,6 +28,7 @@ ITEM = obj(id=INT, type={"type": "string", "enum": ["dialogue", "sign", "key_sfx
 AMBIG = obj(id=INT, options=array(STRING), reason=STRING)
 BATCH = obj(items=array(ITEM), new_terms=array(TERM), ambiguities=array(AMBIG))
 REVIEW = obj(edits=array(obj(id=INT, zh_new=STRING, reason=STRING)))
+INLINE_SDH = re.compile(r"[（(\[【]\s*(?:(?:一声|轻声|轻轻|小声|低声|无奈地?|短促地?)\s*)?(?:叹(?:了[口一]?)?气|叹息|吸气|喘(?:息|气)|(?:苦|轻|冷|大)?笑(?:声|了笑)?|咳嗽(?:声)?|啜泣|抽泣|低语|耳语|清嗓(?:子)?|sighs?|laughs?|chuckles?|gasps?|whispers?)\s*[）)\]】]", re.I)
 
 
 def validated_glossary(value):
@@ -62,6 +63,8 @@ def check_item(cue, item, banned):
             zh = zh[1:-1].strip()
     zh = item["zh"] = " ".join(re.sub(r"[，,]", " ", zh.rstrip("，。,")).split())
     item["note"] = " ".join(TAG.sub("", item["note"]).split()).removeprefix("注：")
+    if kind == "dialogue" and INLINE_SDH.search(zh):
+        hard.append("对白不能出现音效括注，把叹息或笑声融入口吻，例如『唉 又要查账了』")
     if kind == "key_sfx" and re.search(r"传来|响起|听到|听见|发出", zh):
         hard.append("关键音效只写名词短语，例如门后枪声")
     if kind != "sdh_drop" and not zh:

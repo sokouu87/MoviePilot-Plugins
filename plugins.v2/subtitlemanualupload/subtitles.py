@@ -107,7 +107,7 @@ def parse(data, extension):
                     raise ValueError("ASS 事件缺少时间码或文本")
                 raw = row["text"].strip()
                 italic = bool(re.fullmatch(r"\{\\i1\}(?:(?!\{\\i0\}).)*(?:\{\\i0\})?", raw, re.S))
-                raw = EFFECT.sub("", raw).replace(r"\N", " ").replace(r"\n", " ").replace(r"\h", " ")
+                raw = re.sub(r"\{[^{}]*\}", "", raw).replace(r"\N", " ").replace(r"\n", " ").replace(r"\h", " ")
                 add(row["start"], row["end"], raw, italic)
     else:
         raise ValueError("请选择 SRT、ASS 或 SSA 字幕")

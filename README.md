@@ -6,7 +6,7 @@
 
 | 插件 | 目录 | 版本 | 主要功能 |
 | --- | --- | --- | --- |
-| 海拉鲁 AI 字幕 | `plugins.v2/subtitlemanualupload`、`plugins.v3/subtitlemanualupload` | 2.0.0 | ChatGPT 订阅、双语 ASS/SRT、SubHD 官网下载与手动上传 |
+| 海拉鲁 AI 字幕 | `plugins.v2/subtitlemanualupload`、`plugins.v3/subtitlemanualupload` | 2.0.1 | ChatGPT 订阅、双语 ASS/SRT、SubHD 官网下载与手动上传 |
 | AI字幕生成(联动版) | `plugins.v2/autosubv3` | 3.5.54 | 音轨识别、字幕提取、AI 翻译、任务队列、联动字幕匹配 |
 | Emby媒体库封面生成 | `plugins.v2/mediacovergenerator` | 0.9.10 | 生成 Emby/Jellyfin 媒体库静态或动态封面 |
 

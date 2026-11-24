@@ -59,6 +59,9 @@ class Subtitles(unittest.TestCase):
         r=item(1,"【（门后传来一声枪响）】","key_sfx")
         self.assertTrue(check_item(Cue(1,0,2000,"[gunshot]","",False),r,[])[0])
         self.assertEqual(r["zh"],"门后传来一声枪响")
+        for phrase in ("（叹气）可真好", "[sighs] 又来了", "可算完了【轻笑】"):
+            self.assertTrue(check_item(c,item(1,phrase),[])[0])
+        self.assertFalse(check_item(c,item(1,"查纽约（州）那笔账"),[])[0])
 
     def test_no_clobber_and_archive_member(self):
         with tempfile.TemporaryDirectory() as tmp:
