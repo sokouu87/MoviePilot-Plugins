@@ -5,6 +5,7 @@ const props = defineProps({
   api: Object,
   pluginId: { type: String, default: 'SubtitleManualUpload' },
   show_switch: { type: Boolean, default: true },
+  show_close: { type: Boolean, default: true },
 })
 const emit = defineEmits(['close', 'switch'])
 const states = {
@@ -112,6 +113,22 @@ async function perform(operation) {
   }
 }
 
+async function retry(row) {
+  if (busy.value) return
+  busy.value = true
+  actionError.value = ''
+  notice.value = ''
+  try {
+    await api('post', 'retry', { id: row.id })
+    notice.value = `任务 #${row.id} 已进入队列`
+    await load()
+  } catch (error) {
+    actionError.value = errorText(error)
+  } finally {
+    busy.value = false
+  }
+}
+
 function utc(value) {
   return value.replace(' ', 'T') + 'Z'
 }
@@ -156,7 +173,7 @@ onBeforeUnmount(() => { ++requestId; clearInterval(timer) })
               :disabled="busy || !picked.some(row => can(action, row))" @click="request(action, picked)">批量{{ spec.name }}</VBtn>
         <VBtn icon="mdi-refresh" color="primary" variant="text" aria-label="刷新任务" title="刷新任务" :loading="loading" :disabled="busy" @click="load" />
         <VBtn v-if="show_switch" icon="mdi-cog-outline" color="primary" variant="text" aria-label="插件设置" title="插件设置" @click="emit('switch')" />
-        <VBtn icon="mdi-close" color="primary" variant="text" aria-label="关闭" title="关闭" @click="emit('close')" />
+        <VBtn v-if="show_close" icon="mdi-close" color="primary" variant="text" aria-label="关闭" title="关闭" @click="emit('close')" />
       </div>
     </header>
     <main class="content">
@@ -183,6 +200,8 @@ onBeforeUnmount(() => { ++requestId; clearInterval(timer) })
             <div class="meta">
               <span>{{ row.origin }}<template v-if="row.legacy"> · 联动版历史</template></span>
               <span v-if="row.report.source">{{ row.report.source }}</span>
+              <span v-if="row.report.model">{{ row.report.model }}</span>
+              <span v-if="row.report.cues">{{ row.report.cues }} 轴</span>
               <span v-if="row.report.files?.length">输出：{{ row.report.files.join('、') }}</span>
               <time v-if="row.created" :datetime="utc(row.created)" title="创建时间">{{ when(row.created) }}</time>
               <time v-if="row.finished" :datetime="utc(row.finished)" title="结束时间">{{ when(row.finished) }}</time>
@@ -197,6 +216,8 @@ onBeforeUnmount(() => { ++requestId; clearInterval(timer) })
             </details>
           </div>
           <div class="actions">
+            <VBtn v-if="row.state === 'failed' && !row.legacy" size="small" color="primary" variant="tonal"
+                  :disabled="busy" @click="retry(row)">从断点重试</VBtn>
             <VBtn v-for="(spec, action) in actions" :key="action" size="small" :color="spec.color" variant="tonal"
                   :disabled="busy || !can(action, row)" @click="request(action, [row])">{{ spec.name }}</VBtn>
           </div>

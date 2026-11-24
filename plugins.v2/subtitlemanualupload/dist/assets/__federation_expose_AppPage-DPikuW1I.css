@@ -1,0 +1,28 @@
+
+.studio[data-v-923f2e82]{max-width:960px;margin:auto;padding:1rem;color:inherit;font:inherit;overflow-wrap:anywhere}
+.studio header[data-v-923f2e82],.row[data-v-923f2e82]{display:flex;align-items:center;flex-wrap:wrap;gap:.7rem}
+.studio header[data-v-923f2e82]{justify-content:space-between}
+.studio section[data-v-923f2e82]{padding:1.1rem 0;border-top:1px solid rgba(128,128,128,.32)}
+.studio h2[data-v-923f2e82],.studio h3[data-v-923f2e82],.studio h4[data-v-923f2e82],.studio p[data-v-923f2e82]{margin:.45rem 0 .7rem}
+.studio h4[data-v-923f2e82]{margin-top:1.35rem}
+.studio label[data-v-923f2e82]{display:block;margin:.35rem 0}
+.studio input[data-v-923f2e82],.studio select[data-v-923f2e82],.studio textarea[data-v-923f2e82],.studio button[data-v-923f2e82]{border:1px solid #8888;border-radius:6px;padding:.42rem .65rem;font:inherit;color:inherit}
+.studio input[data-v-923f2e82],.studio textarea[data-v-923f2e82],.studio select[data-v-923f2e82]{max-width:100%;background:rgb(var(--v-theme-surface,255,255,255))}
+.studio textarea[data-v-923f2e82]{display:block;width:100%}
+.studio button[data-v-923f2e82]{cursor:pointer}
+.studio button[data-v-923f2e82]:disabled{opacity:.55;cursor:default}
+.studio button[data-v-923f2e82]:focus-visible,.studio a[data-v-923f2e82]:focus-visible{outline:2px solid currentColor}
+.studio .primary[data-v-923f2e82],.studio button[aria-pressed=true][data-v-923f2e82]{background:#225d52;color:white}
+.studio .choices[data-v-923f2e82]{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));padding:0;gap:.4rem;margin:.6rem 0;max-height:18rem;overflow:auto}
+.choices button[data-v-923f2e82]{display:block;width:100%;text-align:left;overflow-wrap:anywhere}.choices small[data-v-923f2e82]{display:block}
+.studio a[data-v-923f2e82]{text-decoration:underline}
+.studio .err[data-v-923f2e82]{color:rgb(var(--v-theme-error,184,51,40))}.studio input[type=search][data-v-923f2e82]{flex:1}
+
+.views[data-v-c7cb5a1b] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(var(--v-border-color, 92, 92, 110), .16);
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+}

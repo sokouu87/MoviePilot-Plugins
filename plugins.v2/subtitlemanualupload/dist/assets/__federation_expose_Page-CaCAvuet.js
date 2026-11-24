@@ -40,13 +40,15 @@ const _hoisted_15 = { class: "path" };
 const _hoisted_16 = { class: "meta" };
 const _hoisted_17 = { key: 0 };
 const _hoisted_18 = { key: 1 };
-const _hoisted_19 = ["datetime"];
-const _hoisted_20 = ["datetime"];
+const _hoisted_19 = { key: 2 };
+const _hoisted_20 = { key: 3 };
 const _hoisted_21 = ["datetime"];
-const _hoisted_22 = { key: 0 };
-const _hoisted_23 = ["href"];
-const _hoisted_24 = { class: "actions" };
-const _hoisted_25 = {
+const _hoisted_22 = ["datetime"];
+const _hoisted_23 = ["datetime"];
+const _hoisted_24 = { key: 0 };
+const _hoisted_25 = ["href"];
+const _hoisted_26 = { class: "actions" };
+const _hoisted_27 = {
   key: 3,
   class: "pages",
   "aria-label": "任务分页"
@@ -63,6 +65,7 @@ const _sfc_main = {
   api: Object,
   pluginId: { type: String, default: 'SubtitleManualUpload' },
   show_switch: { type: Boolean, default: true },
+  show_close: { type: Boolean, default: true },
 },
   emits: ['close', 'switch'],
   setup(__props, { emit: __emit }) {
@@ -165,6 +168,22 @@ async function perform(operation) {
     notice.value = `${actions[operation.action].result} ${result.changed.length} 条`;
     if (skipped.length) notice.value += `，跳过 ${skipped.length} 条（${skipped.slice(0, 3).join('、')}）`;
     selected.value = [];
+    await load();
+  } catch (error) {
+    actionError.value = errorText(error);
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function retry(row) {
+  if (busy.value) return
+  busy.value = true;
+  actionError.value = '';
+  notice.value = '';
+  try {
+    await api('post', 'retry', { id: row.id });
+    notice.value = `任务 #${row.id} 已进入队列`;
     await load();
   } catch (error) {
     actionError.value = errorText(error);
@@ -281,14 +300,17 @@ return (_ctx, _cache) => {
               onClick: _cache[2] || (_cache[2] = $event => (emit('switch')))
             }))
           : _createCommentVNode("", true),
-        _createVNode(_component_VBtn, {
-          icon: "mdi-close",
-          color: "primary",
-          variant: "text",
-          "aria-label": "关闭",
-          title: "关闭",
-          onClick: _cache[3] || (_cache[3] = $event => (emit('close')))
-        })
+        (__props.show_close)
+          ? (_openBlock(), _createBlock(_component_VBtn, {
+              key: 1,
+              icon: "mdi-close",
+              color: "primary",
+              variant: "text",
+              "aria-label": "关闭",
+              title: "关闭",
+              onClick: _cache[3] || (_cache[3] = $event => (emit('close')))
+            }))
+          : _createCommentVNode("", true)
       ])
     ]),
     _createElementVNode("main", _hoisted_5, [
@@ -363,34 +385,40 @@ return (_ctx, _cache) => {
                 (row.report.source)
                   ? (_openBlock(), _createElementBlock("span", _hoisted_17, _toDisplayString(row.report.source), 1))
                   : _createCommentVNode("", true),
+                (row.report.model)
+                  ? (_openBlock(), _createElementBlock("span", _hoisted_18, _toDisplayString(row.report.model), 1))
+                  : _createCommentVNode("", true),
+                (row.report.cues)
+                  ? (_openBlock(), _createElementBlock("span", _hoisted_19, _toDisplayString(row.report.cues) + " 轴", 1))
+                  : _createCommentVNode("", true),
                 (row.report.files?.length)
-                  ? (_openBlock(), _createElementBlock("span", _hoisted_18, "输出：" + _toDisplayString(row.report.files.join('、')), 1))
+                  ? (_openBlock(), _createElementBlock("span", _hoisted_20, "输出：" + _toDisplayString(row.report.files.join('、')), 1))
                   : _createCommentVNode("", true),
                 (row.created)
                   ? (_openBlock(), _createElementBlock("time", {
-                      key: 2,
+                      key: 4,
                       datetime: utc(row.created),
                       title: "创建时间"
-                    }, _toDisplayString(when(row.created)), 9, _hoisted_19))
+                    }, _toDisplayString(when(row.created)), 9, _hoisted_21))
                   : _createCommentVNode("", true),
                 (row.finished)
                   ? (_openBlock(), _createElementBlock("time", {
-                      key: 3,
+                      key: 5,
                       datetime: utc(row.finished),
                       title: "结束时间"
-                    }, _toDisplayString(when(row.finished)), 9, _hoisted_20))
+                    }, _toDisplayString(when(row.finished)), 9, _hoisted_22))
                   : (row.report.rendered)
                     ? (_openBlock(), _createElementBlock("time", {
-                        key: 4,
+                        key: 6,
                         datetime: utc(row.report.rendered)
-                      }, "译稿生成时间 " + _toDisplayString(when(row.report.rendered)), 9, _hoisted_21))
+                      }, "译稿生成时间 " + _toDisplayString(when(row.report.rendered)), 9, _hoisted_23))
                     : _createCommentVNode("", true)
               ]),
               _createElementVNode("p", {
                 class: _normalizeClass(["detail", { 'error-text': row.state === 'failed' }])
               }, _toDisplayString(row.cancelling ? '正在取消，等待当前步骤结束' : row.detail), 3),
               (hasReview(row.report))
-                ? (_openBlock(), _createElementBlock("details", _hoisted_22, [
+                ? (_openBlock(), _createElementBlock("details", _hoisted_24, [
                     _cache[11] || (_cache[11] = _createElementVNode("summary", null, "审校记录", -1)),
                     (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(row.report.warnings, (words, id) => {
                       return (_openBlock(), _createElementBlock("p", { key: id }, "第 " + _toDisplayString(id) + " 轴 · " + _toDisplayString(words.join('、')), 1))
@@ -406,13 +434,28 @@ return (_ctx, _cache) => {
                           href: url,
                           target: "_blank",
                           rel: "noopener noreferrer"
-                        }, _toDisplayString(url), 9, _hoisted_23)
+                        }, _toDisplayString(url), 9, _hoisted_25)
                       ]))
                     }), 128))
                   ]))
                 : _createCommentVNode("", true)
             ]),
-            _createElementVNode("div", _hoisted_24, [
+            _createElementVNode("div", _hoisted_26, [
+              (row.state === 'failed' && !row.legacy)
+                ? (_openBlock(), _createBlock(_component_VBtn, {
+                    key: 0,
+                    size: "small",
+                    color: "primary",
+                    variant: "tonal",
+                    disabled: busy.value,
+                    onClick: $event => (retry(row))
+                  }, {
+                    default: _withCtx(() => [...(_cache[12] || (_cache[12] = [
+                      _createTextVNode("从断点重试", -1)
+                    ]))]),
+                    _: 1
+                  }, 8, ["disabled", "onClick"]))
+                : _createCommentVNode("", true),
               (_openBlock(), _createElementBlock(_Fragment, null, _renderList(actions, (spec, action) => {
                 return _createVNode(_component_VBtn, {
                   key: action,
@@ -433,14 +476,14 @@ return (_ctx, _cache) => {
         }), 128))
       ]),
       (offset.value || data.value.more)
-        ? (_openBlock(), _createElementBlock("nav", _hoisted_25, [
+        ? (_openBlock(), _createElementBlock("nav", _hoisted_27, [
             _createVNode(_component_VBtn, {
               size: "small",
               variant: "tonal",
               disabled: !offset.value || loading.value,
               onClick: _cache[5] || (_cache[5] = $event => (selectView(filter.value, order.value, offset.value - pageSize)))
             }, {
-              default: _withCtx(() => [...(_cache[12] || (_cache[12] = [
+              default: _withCtx(() => [...(_cache[13] || (_cache[13] = [
                 _createTextVNode("上一页", -1)
               ]))]),
               _: 1
@@ -452,7 +495,7 @@ return (_ctx, _cache) => {
               disabled: !data.value.more || loading.value,
               onClick: _cache[6] || (_cache[6] = $event => (selectView(filter.value, order.value, offset.value + pageSize)))
             }, {
-              default: _withCtx(() => [...(_cache[13] || (_cache[13] = [
+              default: _withCtx(() => [...(_cache[14] || (_cache[14] = [
                 _createTextVNode("下一页", -1)
               ]))]),
               _: 1
@@ -489,7 +532,7 @@ return (_ctx, _cache) => {
                       variant: "text",
                       onClick: _cache[7] || (_cache[7] = $event => (pending.value = null))
                     }, {
-                      default: _withCtx(() => [...(_cache[14] || (_cache[14] = [
+                      default: _withCtx(() => [...(_cache[15] || (_cache[15] = [
                         _createTextVNode("返回", -1)
                       ]))]),
                       _: 1
@@ -519,6 +562,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-913f9b46"]]);
+const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-e65d025b"]]);
 
 export { Page as default };
