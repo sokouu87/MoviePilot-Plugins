@@ -1,0 +1,19 @@
+
+.studio[data-v-09aa49e5]{max-width:960px;margin:auto;padding:1rem;color:inherit;font:inherit;overflow-wrap:anywhere}
+.studio header[data-v-09aa49e5],.row[data-v-09aa49e5]{display:flex;align-items:center;flex-wrap:wrap;gap:.7rem}
+.studio header[data-v-09aa49e5]{justify-content:space-between}
+.studio section[data-v-09aa49e5]{padding:1.1rem 0;border-top:1px solid rgba(128,128,128,.32)}
+.studio h2[data-v-09aa49e5],.studio h3[data-v-09aa49e5],.studio h4[data-v-09aa49e5],.studio p[data-v-09aa49e5]{margin:.45rem 0 .7rem}
+.studio h4[data-v-09aa49e5]{margin-top:1.35rem}
+.studio label[data-v-09aa49e5]{display:block;margin:.35rem 0}
+.studio input[data-v-09aa49e5],.studio select[data-v-09aa49e5],.studio textarea[data-v-09aa49e5],.studio button[data-v-09aa49e5]{border:1px solid #8888;border-radius:6px;padding:.42rem .65rem;font:inherit;color:inherit}
+.studio input[data-v-09aa49e5],.studio textarea[data-v-09aa49e5],.studio select[data-v-09aa49e5]{max-width:100%;background:rgb(var(--v-theme-surface,255,255,255))}
+.studio textarea[data-v-09aa49e5]{display:block;width:100%}
+.studio button[data-v-09aa49e5]{cursor:pointer}
+.studio button[data-v-09aa49e5]:disabled{opacity:.55;cursor:default}
+.studio button[data-v-09aa49e5]:focus-visible,.studio a[data-v-09aa49e5]:focus-visible{outline:2px solid currentColor}
+.studio .primary[data-v-09aa49e5],.studio button[aria-pressed=true][data-v-09aa49e5]{background:#225d52;color:white}
+.studio .choices[data-v-09aa49e5]{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));padding:0;gap:.4rem;margin:.6rem 0;max-height:18rem;overflow:auto}
+.choices button[data-v-09aa49e5]{display:block;width:100%;text-align:left;overflow-wrap:anywhere}.choices small[data-v-09aa49e5]{display:block}
+.studio article[data-v-09aa49e5]{border-bottom:1px solid #8884;padding:.6rem 0}.studio a[data-v-09aa49e5]{text-decoration:underline}
+.studio .err[data-v-09aa49e5]{color:rgb(var(--v-theme-error,184,51,40))}.studio input[type=search][data-v-09aa49e5]{flex:1}

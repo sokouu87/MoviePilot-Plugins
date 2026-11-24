@@ -1,396 +1,282 @@
-from __future__ import annotations
-
+"""海拉鲁 AI 字幕。V2/V3 使用同一个插件标识和发行包。"""
 import json
-import os
-import re
-import shutil
-import subprocess
-import sys
 import threading
-import time
-from collections import OrderedDict
-from datetime import datetime, timedelta
+import zipfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import HTTPException, Request
-from starlette.datastructures import UploadFile
-
-from app.sdk.config import settings
-from app.sdk.media import MetaInfoPath
-from app.sdk.logging import logger
 from app.plugins import _PluginBase
-
+from app.schemas.types import EventType
+from app.db.models.transferhistory import TransferHistory
 try:
-    from app.sdk.plugins import PluginManager
-except Exception:
-    PluginManager = None
+    from app.sdk.events import eventmanager
+    from app.sdk.logging import logger
+    from app.db.session import SessionFactory
+except ImportError:
+    from app.core.event import eventmanager
+    from app.log import logger
+    SessionFactory = None
 
-try:
-    from app.chain.tmdb import TmdbChain
-except Exception:
-    TmdbChain = None
+from .media import metadata
+from .studio import BRIDGE, EMPTY, MODEL, Studio
+from .translation import DEFAULT_BANNED, read_state
 
-try:
-    from app.schemas.types import MediaType
-except Exception:
-    class _NoopMediaType:
-        MOVIE = "movie"
-        TV = "tv"
+DEFAULT = {"enabled": False, "auto_translate": True, "show_sidebar_nav": True, "model": MODEL, "effort": "high",
+           "whisper": "", "bridge_key": "", "banned": DEFAULT_BANNED, "manual_dirs": ""}
+MAX_UPLOAD = 24 * 1024 * 1024
 
-    MediaType = _NoopMediaType
 
-try:
-    from app.sdk.events import eventmanager, Event as MPEvent
-    from app.schemas.types import EventType
-except Exception:
-    class _NoopEventManager:
-        @staticmethod
-        def register(_event_type):
-            def decorator(func):
-                return func
+def field(obj, name, default=None):
+    return obj.get(name, default) if isinstance(obj, dict) else getattr(obj, name, default)
 
-            return decorator
 
-    class _NoopEventType:
-        TransferComplete = "transfer.complete"
-
-    eventmanager = _NoopEventManager()
-    MPEvent = Any
-    EventType = _NoopEventType
-
-from .matching.subtitle_formats import SUBTITLE_EXTS
-from .online.online_subtitle import (
-    OnlineSubtitleSearchService,
-    build_search_keywords,
-    check_online_rate_limit,
-    extract_title_aliases,
-)
-from .config.config_schema import (
-    AUTO_MULTI_SUBTITLE_MODES,
-    AUTO_TRANSFER_SUBTITLE_STRATEGIES,
-    AUTO_TRANSFER_SUBTITLE_STRATEGY_ALIASES,
-    AVAILABLE_ONLINE_PROVIDER_IDS,
-    DEFAULT_ASSRT_API_URL,
-    DEFAULT_ENGINE,
-    DEFAULT_ONLINE_PROVIDER_IDS,
-    DEFAULT_OPENSUBTITLES_API_URL,
-    DEFAULT_PROVIDER_ROOTS,
-    DEFAULT_RAR_TOOL_PATH,
-    MANUAL_ONLINE_PROVIDER_IDS,
-    RAR_DEPENDENCY_MODES,
-    build_config_form,
-    host_from_url,
-    normalize_auto_multi_subtitle_mode,
-    normalize_auto_transfer_subtitle_strategy,
-    normalize_online_site_urls,
-    normalize_plugin_config,
-    normalize_provider_ids,
-    normalize_rar_dependency_mode,
-    normalize_root_url,
-    normalize_timeline_max_offset,
-    normalize_timeline_min_offset,
-    normalize_timeline_vad_mode,
-)
-from .config.config_runtime import (
-    apply_runtime_config,
-    build_save_config_payload,
-    reset_runtime_state,
-    sync_class_runtime_config,
-)
-from .runtime.runtime_helpers import (
-    apply_tmdb_detail as runtime_apply_tmdb_detail,
-    brief_ids as runtime_brief_ids,
-    cache_loaded_at as runtime_cache_loaded_at,
-    decode_preview_bytes as runtime_decode_preview_bytes,
-    entry_filesystem_signature as runtime_entry_filesystem_signature,
-    entry_matches_keyword as runtime_entry_matches_keyword,
-    entry_path_is_valid as runtime_entry_path_is_valid,
-    extract_episode_hint as runtime_extract_episode_hint,
-    hash_text as runtime_hash_text,
-    is_stream_path as runtime_is_stream_path,
-    is_upload_file as runtime_is_upload_file,
-    json_clone as runtime_json_clone,
-    media_type_text as runtime_media_type_text,
-    normalize_text as runtime_normalize_text,
-    ok_response,
-    poster_url as runtime_poster_url,
-    safe_int as runtime_safe_int,
-    timestamp_iso as runtime_timestamp_iso,
-    tmdb_aliases as runtime_tmdb_aliases,
-    tmdb_detail_payload as runtime_tmdb_detail_payload,
-)
-from .matching.subtitle_language import (
-    DEFAULT_AUTO_FORMAT_PRIORITY,
-    DEFAULT_AUTO_LANGUAGE_PRIORITY,
-    LANGUAGE_SUFFIX_ALIASES,
-    auto_language_bucket,
-    auto_subtitle_sort_key,
-    detect_language_profile,
-    is_chinese_language_suffix,
-    language_suffix_from_filename,
-    normalize_auto_format_priority,
-    normalize_auto_language_key,
-    normalize_auto_language_priority,
-    normalize_language_suffix,
-)
-from .integrations.autosub_bridge import AutoSubBridge, autosub_task_summary as bridge_autosub_task_summary
-from .matching.subtitle_history import SubtitleHistory
-from .matching.subtitle_writer import (
-    SubtitleWriter,
-    backup_subtitle_if_needed as writer_backup_subtitle_if_needed,
-    build_destination_name as writer_build_destination_name,
-    build_write_operations as writer_build_write_operations,
-    subtitle_backup_path as writer_subtitle_backup_path,
-    timeline_rejection_message as writer_timeline_rejection_message,
-    timeline_result_blocks_auto_write as writer_timeline_result_blocks_auto_write,
-)
-from .timeline.timeline_fixer import TimelineFixResult, check_timeline_fixer_dependencies, fix_subtitle_timeline
-from .matching.tongwen import convert_subtitle_file_to_simplified
-from .catalog.target_resolver import (
-    LocalMediaCatalog,
-    MediaTargetResolver,
-    SubtitleInventory,
-)
-from .timeline.timeline_tasks import timeline_task_summary
-from .auto_transfer import AutoTransferService
-from .runtime.service_registry import SubtitleManualUploadServices
-from .api.routes import build_api_routes
-from .runtime.shell_helpers import install_shell_helpers
+def series_identity(info):
+    identity = field(info, "media_id") or field(info, "tmdbid") or field(info, "tmdb_id")
+    if identity:
+        kind = field(info, "type", "")
+        source = field(info, "media_source") or "tmdb"
+        return f"{getattr(kind, 'value', kind)}|{getattr(source, 'value', source)}|{identity}"
+    return ""
 
 
 class SubtitleManualUpload(_PluginBase):
-    plugin_name = "海拉鲁字幕大师"
-    plugin_desc = "脱胎自 ChineseSubFinder，支持字幕搜索、上传、匹配、改名与智能调轴。"
-    plugin_icon = "https://raw.githubusercontent.com/ifsherlock/MoviePilot-Plugins/main/icons/hyrule-subtitle-master.png"
-    plugin_version = "1.2.22"
-    plugin_author = "ifsherlock"
-    author_url = "https://github.com/ifsherlock"
+    plugin_name = "海拉鲁 AI 字幕"
+    plugin_desc = "用 ChatGPT 订阅调研、精翻并审校双语字幕，支持前往 SubHD 官网下载后手动上传。"
+    plugin_icon = "https://raw.githubusercontent.com/sokouu87/moviepilot-plugins/main/icons/hyrule-subtitle-master.png"
+    plugin_version = "2.0.0"
+    plugin_author = "sokouu87"
+    author_url = "https://github.com/sokouu87"
     plugin_config_prefix = "subtitlemanualupload_"
     plugin_order = 48
     auth_level = 1
-
+    _studio = None
     _enabled = False
-    _show_sidebar_nav = True
-    _rar_dependency_mode = "none"
-    _rar_tool_path = DEFAULT_RAR_TOOL_PATH
-    _default_online_provider_ids = list(DEFAULT_ONLINE_PROVIDER_IDS)
-    _available_online_provider_ids = list(AVAILABLE_ONLINE_PROVIDER_IDS)
-    _manual_online_provider_ids = list(MANUAL_ONLINE_PROVIDER_IDS)
-    _online_provider_ids = list(DEFAULT_ONLINE_PROVIDER_IDS)
-    _online_engine = DEFAULT_ENGINE
-    _online_use_proxy = False
-    _online_site_urls = dict(DEFAULT_PROVIDER_ROOTS)
-    _online_rate_records: Dict[str, List[float]] = {}
-    _online_rate_limit_per_minute = 5
-    _auto_transfer_queue_debounce_seconds = 3
-    _auto_transfer_queue_history_limit = 200
-    _transfer_auto_dedupe_seconds = 300
-    _transfer_auto_recent: Dict[str, float] = {}
-    _transfer_auto_lock = threading.Lock()
-    _auto_transfer_tasks: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-    _auto_transfer_worker: Optional[threading.Thread] = None
-    _auto_transfer_stopping = False
-    _auto_season_package_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-    _embedded_subtitle_probe_cache: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
-    _embedded_subtitle_probe_cache_max_size = 500
-    _embedded_subtitle_text_codecs = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
-    _embedded_subtitle_image_codecs = {"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub", "dvb_teletext", "eia_608"}
-    _subdl_api_key = ""
-    _subtitlecat_include_translations = False
-    _assrt_api_key = ""
-    _assrt_api_url = DEFAULT_ASSRT_API_URL
-    _opensubtitles_api_key = ""
-    _opensubtitles_api_url = DEFAULT_OPENSUBTITLES_API_URL
-    _opensubtitles_username = ""
-    _opensubtitles_password = ""
-    _ai_link_enabled = True
-    _traditional_to_simplified = False
+    # 已安装的 AutoSubv3 用这三个字段判断本插件是否接管入库。
     _auto_search_on_transfer = False
-    _auto_skip_chinese_media_on_transfer = True
-    _auto_transfer_subtitle_strategy = "online_then_ai_source"
-    _auto_search_min_score = 20
-    _trust_transfer_history_paths = False
-    _manual_strm_enabled = False
-    _manual_strm_paths = []
-    _auto_search_on_manual_strm = False
-    _manual_strm_watch_debounce_seconds = 2
-    _manual_strm_monitor = None
-    _timeline_max_offset_seconds = 120
-    _timeline_min_offset_seconds = 0.2
-    _timeline_vad_mode = "webrtc"
-    _timeline_allow_risky_offset = False
-    _cache_ttl_seconds = 1800
-    _entry_map_max_size = 2000
-    _media_index_cache_max_keys = 20
-    _subtitle_directory_cache = OrderedDict()
-    _subtitle_directory_cache_max_size = 1000
-    _subtitle_directory_cache_ttl_seconds = 900
-    _match_history_cache_ttl_seconds = 86400
-    _match_history_validation_interval_seconds = 300
-    _timeline_task_ttl_seconds = 86400
-    _rar_dependency_status: Dict[str, Any] = {
-        "mode": "none",
-        "state": "idle",
-        "message": "",
-        "checked_at": "",
-    }
-    _entry_map: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-    _media_index_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-    _cache_refreshing = False
-    _cache_refresh_started_at = ""
-    _cache_refresh_completed_at = ""
-    _cache_refresh_error = ""
-    _local_entries_cache: Dict[str, Any] = {
-        "loaded_at": None,
-        "entries": [],
-        "media_count": 0,
-        "persisted": False,
-    }
-    _match_history_cache: Dict[str, Any] = {
-        "version": 3,
-        "loaded_at": None,
-        "validated_at": None,
-        "signature": "",
-        "items": [],
-        "entry_count": 0,
-        "persisted": False,
-    }
-    _match_history_generation = 0
-    _match_history_refreshing = False
-    _match_history_refresh_started_at = ""
-    _match_history_refresh_completed_at = ""
-    _match_history_refresh_error = ""
-    _match_history_refresh_lock = threading.Lock()
-    _match_history_build_lock = threading.Lock()
-    _timeline_tasks: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-    _tmdb_detail_cache: Dict[str, Dict[str, Any]] = {}
+    _ai_link_enabled = True
+    _auto_transfer_subtitle_strategy = "ai_source_only"
 
-    _subtitle_exts = SUBTITLE_EXTS
-    _archive_exts = {".zip", ".rar", ".7z"}
-    _rar_exts = {".rar"}
-    _sevenzip_exts = {".7z"}
-    _rar_tools = ("unar", "/usr/bin/unar")
-    _sevenzip_tools = ("unar", "/usr/bin/unar")
-    _rar_python_package = "rarfile"
-    _rar_dependency_modes = set(RAR_DEPENDENCY_MODES)
-    _auto_transfer_subtitle_strategies = set(AUTO_TRANSFER_SUBTITLE_STRATEGIES)
-    _auto_multi_subtitle_modes = set(AUTO_MULTI_SUBTITLE_MODES)
-    _default_auto_language_priority = list(DEFAULT_AUTO_LANGUAGE_PRIORITY)
-    _default_auto_format_priority = list(DEFAULT_AUTO_FORMAT_PRIORITY)
-    _auto_transfer_subtitle_strategy_aliases = dict(AUTO_TRANSFER_SUBTITLE_STRATEGY_ALIASES)
-    _chinese_media_language_codes = {"zh", "cn", "zho", "cmn", "yue"}
-    _chinese_media_country_codes = {"cn", "hk", "tw", "sg"}
-    _chinese_media_region_names = {
-        "china",
-        "hong kong",
-        "taiwan",
-        "singapore",
-        "中国",
-        "大陆",
-        "香港",
-        "台湾",
-        "新加坡",
-    }
-    _chinese_media_category_pattern = re.compile(r"华语|国产|大陆|内地|香港|台湾|港剧|台剧|港片|台片|港台|中国")
-    _stream_exts = {".strm"}
-    _default_session_hours = 24
-    _language_suffix_aliases = dict(LANGUAGE_SUFFIX_ALIASES)
-
-    def init_plugin(self, config: dict = None):
-        normalized_config = normalize_plugin_config(
-            config,
-            subtitle_exts=self._subtitle_exts,
-            default_auto_language_priority=self._default_auto_language_priority,
-            default_auto_format_priority=self._default_auto_format_priority,
-            available_provider_ids=self._available_online_provider_ids,
-            default_provider_ids=self._default_online_provider_ids,
-        )
-        apply_runtime_config(self, normalized_config)
-        if (config or {}).get("opensubtitles_username") and "@" in self._normalize_text((config or {}).get("opensubtitles_username")):
-            logger.warning("[SubtitleManualUpload] OpenSubtitles 用户名疑似邮箱，已忽略下载认证用户名")
-        sync_class_runtime_config(type(self), self)
-        reset_runtime_state(self)
-        self.services.local_media_catalog().restore_persisted_local_cache()
-        self.services.history().restore_persisted_match_history_cache()
-        self._save_config()
-        self._prepare_rar_dependency()
-        self.services.upload_session().cleanup_old_sessions()
-        self.services.manual_strm_monitor().start()
-
-    def get_state(self) -> bool:
-        return bool(self._enabled)
-
-    @staticmethod
-    def get_command() -> List[Dict[str, Any]]:
-        return []
-
-    def get_actions(self) -> List[Dict[str, Any]]:
-        from .automation.workflow_actions import build_actions
-
-        return build_actions(self)
-
-    def get_agent_tools(self) -> List[type]:
-        from .automation.agent_tools import get_agent_tools
-
-        return get_agent_tools()
-
-    @staticmethod
-    def get_render_mode() -> Tuple[str, str]:
-        return "vue", "dist/assets"
-
-    def get_api(self) -> List[Dict[str, Any]]:
-        return build_api_routes(self)
-
-    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
-        return build_config_form(
-            default_auto_language_priority=self._default_auto_language_priority,
-            default_auto_format_priority=self._default_auto_format_priority,
-            default_online_provider_ids=self._default_online_provider_ids,
-        )
-
-    def get_page(self) -> List[dict]:
-        return []
-
-    def get_sidebar_nav(self) -> List[Dict[str, Any]]:
-        if not self.get_state() or not self._show_sidebar_nav:
-            return []
-        return [
-            {
-                "nav_key": "main",
-                "title": "海拉鲁字幕大师",
-                "icon": "mdi-file-upload-outline",
-                "section": "organize",
-                "permission": "manage",
-                "order": 48,
-            }
-        ]
-
-    @property
-    def services(self) -> SubtitleManualUploadServices:
-        registry = getattr(self, "_services_registry", None)
-        if registry is None:
-            registry = SubtitleManualUploadServices(self)
-            self._services_registry = registry
-        return registry
+    def init_plugin(self, config=None):
+        self.stop_service()
+        original = config or {}
+        current = {**DEFAULT, **{k: v for k, v in original.items() if k in DEFAULT}}
+        current["auto_translate"] = original.get("auto_translate", original.get("auto_search_on_transfer", True))
+        if "manual_dirs" not in original and original.get("manual_strm_enabled"):
+            dirs = original.get("manual_strm_paths", "")
+            current["manual_dirs"] = "\n".join(dirs) if isinstance(dirs, list) else str(dirs or "")
+        self._config = current
+        self._enabled = bool(current["enabled"])
+        self._auto_search_on_transfer = self._enabled and bool(current["auto_translate"])
+        self._index_lock = threading.Lock()
+        self._indexing = False
+        self._index_error = ""
+        if not self._enabled:
+            return
+        legacy = self.get_config("AutoSubv3") or {}
+        key = current.get("bridge_key") or ""
+        if not key:
+            endpoints = legacy.get("openai_endpoints") or []
+            if isinstance(endpoints, str):
+                try:
+                    endpoints = json.loads(endpoints)
+                except ValueError:
+                    endpoints = []
+            for item in endpoints if isinstance(endpoints, list) else []:
+                if isinstance(item, dict) and item.get("model") == "chatgpt-subscription" and str(item.get("api_url", "")).rstrip("/") == BRIDGE:
+                    key = item.get("api_key")
+                    break
+            if not key and legacy.get("openai_model") == "chatgpt-subscription" and str(legacy.get("openai_url", "")).rstrip("/") == BRIDGE:
+                key = legacy.get("openai_key")
+        if not current["whisper"]:
+            cache = self.get_data_path("AutoSubv3") / "faster-whisper-models" / "cache"
+            candidates = sorted(cache.glob("models--*/snapshots/*/model.bin"), key=lambda p: ("large-v3" not in str(p), str(p)))
+            if candidates:
+                current["whisper"] = str(candidates[0].parent)
+        self._studio = Studio(self.get_data_path(), current, key)
+        self._studio.start()
+        self._refresh()
 
     def stop_service(self):
-        self.services.manual_strm_monitor().stop()
-        self.services.auto_transfer().stop()
+        if self._studio:
+            self._studio.close()
+            self._studio = None
+
+    def get_state(self):
+        return self._enabled
+
+    @staticmethod
+    def get_render_mode():
+        return "vue", "dist/assets"
+
+    @staticmethod
+    def get_command():
+        return []
+
+    def get_page(self):
+        return []
+
+    def get_form(self):
+        return [], dict(DEFAULT)
+
+    def get_sidebar_nav(self):
+        return ([{"nav_key": "main", "title": self.plugin_name, "icon": "mdi-subtitles-outline", "section": "organize",
+                  "permission": "manage", "order": 48}] if self._enabled and self._config.get("show_sidebar_nav") else [])
+
+    def _active(self):
+        if not self._studio:
+            raise HTTPException(409, "请先启用海拉鲁 AI 字幕")
+        return self._studio
+
+    def _refresh(self):
+        studio = self._active()
+        lock = self._index_lock
+        if not lock.acquire(blocking=False):
+            return
+        self._indexing = True
+        self._index_error = ""
+
+        def index():
+            session = None
+            try:
+                session = SessionFactory() if SessionFactory else None
+                page, previous = 1, None
+                while not studio.stop.is_set():
+                    rows = TransferHistory.list_by_page(db=session, page=page, count=250, status=True)
+                    if not rows:
+                        break
+                    signature = (rows[0].id, rows[-1].id)
+                    if signature == previous:
+                        raise ValueError("整理历史的分页没有前进")
+                    previous = signature
+                    for r in rows:
+                        if studio.stop.is_set():
+                            return
+                        item = r.dest_fileitem or {}
+                        path = Path(item.get("path") or r.dest or "")
+                        if (item.get("storage") or getattr(r, "dest_storage", None) or "local") == "local":
+                            studio.register(path, metadata(path, title=r.title, year=r.year, season=r.seasons,
+                                                          episode=r.episodes, series_id=series_identity(r)))
+                    if len(rows) < 250:
+                        break
+                    page += 1
+                for line in str(studio.config["manual_dirs"] or "").splitlines():
+                    folder = Path(line.strip())
+                    if not line.strip() or not folder.is_absolute() or not folder.is_dir():
+                        continue
+                    for file in folder.rglob("*.strm"):
+                        if studio.stop.is_set():
+                            return
+                        studio.register(file)
+            except Exception as exc:
+                if self._studio is studio:
+                    self._index_error = f"索引读取失败：{type(exc).__name__}"
+                logger.warning("[海拉鲁 AI 字幕] 整理历史读取失败：%s", type(exc).__name__)
+            finally:
+                if session is not None:
+                    session.close()
+                if self._studio is studio:
+                    self._indexing = False
+                lock.release()
+        threading.Thread(target=index, name="hyrule-media-index", daemon=True).start()
 
     @eventmanager.register(EventType.TransferComplete)
-    def listen_transfer_complete(self, event: MPEvent):
-        if not self.get_state() or not self._auto_search_on_transfer:
+    def on_transfer(self, event):
+        studio = self._studio
+        if not studio:
             return
-        self.services.auto_transfer().handle_transfer_complete(event)
+        data = field(event, "event_data") or {}
+        transfer = field(data, "transferinfo")
+        if not transfer or field(transfer, "success", True) is False:
+            return
+        item = field(transfer, "target_item") or field(transfer, "target_diritem")
+        if field(item, "storage", "local") not in (None, "", "local"):
+            return
+        files = field(transfer, "file_list_new") or []
+        if isinstance(files, (str, Path)):
+            files = [files]
+        fallback = field(item, "path") or field(transfer, "target_path")
+        if not files and fallback:
+            files = [fallback]
+        info, meta = field(data, "mediainfo"), field(data, "meta")
+        for file in files:
+            if not isinstance(file, (str, Path)):
+                continue
+            path = Path(file)
+            m = metadata(path, title=field(info, "title") or field(meta, "name"), year=field(info, "year"),
+                         season=field(meta, "begin_season") if len(files) == 1 else None,
+                         episode=field(meta, "begin_episode") if len(files) == 1 else None, series_id=series_identity(info))
+            key = studio.register(path, m)
+            if key and self._auto_search_on_transfer:
+                studio.submit(key, automatic=True)
 
-    def _save_config(self) -> None:
-        self.update_config(build_save_config_payload(self))
+    def get_api(self):
+        routes = [("/targets", self.targets, "GET"), ("/target", self.target, "GET"), ("/refresh", self.refresh, "POST"), ("/jobs", self.jobs, "GET"),
+                  ("/translate", self.submit, "POST"), ("/retry", self.retry, "POST"), ("/upload", self.upload, "POST"),
+                  ("/glossary", self.glossary, "GET"), ("/glossary", self.save_glossary, "POST"),
+                  ("/metadata", self.save_metadata, "POST")]
+        return [{"path": p, "endpoint": f, "methods": [m], "auth": "bear", "summary": f.__doc__ or self.plugin_name} for p, f, m in routes]
 
+    def targets(self, q: str = "", offset: int = 0):
+        return {**self._active().targets(q[:240], max(0, offset)), "indexing": self._indexing, "error": self._index_error}
 
-install_shell_helpers(
-    SubtitleManualUpload,
-    upload_file_type=UploadFile,
-    http_exception=HTTPException,
-    settings_obj=settings,
-)
+    def target(self, id: str):
+        studio = self._active()
+        return studio.describe(id, *self._check(studio.target, id))
+
+    def refresh(self):
+        self._refresh()
+        return {"ok": True}
+
+    def jobs(self):
+        studio = self._active()
+        return {"jobs": studio.history(), "configured": bool(studio.key), "model": studio.config["model"], "effort": studio.config["effort"]}
+
+    @staticmethod
+    def _check(call, *args):
+        try:
+            return call(*args)
+        except (ValueError, OSError, zipfile.BadZipFile, NotImplementedError) as exc:
+            raise HTTPException(422, str(exc)[:300]) from exc
+
+    def submit(self, body: dict):
+        return {"id": self._check(self._active().submit, str(body.get("target", "")))}
+
+    def retry(self, body: dict):
+        self._check(self._active().retry, body.get("id"))
+        return {"ok": True}
+
+    def glossary(self, target: str):
+        studio = self._active()
+        _, meta = self._check(studio.target, target)
+        return {"glossary": read_state(studio.glossary_path(meta), EMPTY)}
+
+    def save_glossary(self, body: dict):
+        studio = self._active()
+        _, meta = self._check(studio.target, str(body.get("target", "")))
+        self._check(studio.set_glossary, meta, body.get("glossary"))
+        return {"ok": True}
+
+    def save_metadata(self, body: dict):
+        studio = self._active()
+        key = str(body.get("target", ""))
+        path, old = self._check(studio.target, key)
+        edits = {k: str(body.get(k) or "").strip()[:180] for k in ("title", "year", "season", "episode")}
+        meta = metadata(path, **edits, series_id=old.get("series_id", ""))
+        studio.override_meta(key, meta)
+        return {"ok": True}
+
+    async def upload(self, request: Request):
+        studio = self._active()
+        size = request.headers.get("content-length")
+        if size and size.isdigit() and int(size) > MAX_UPLOAD + 65536:
+            raise HTTPException(413, "上传超过 24 MiB")
+        async with request.form() as form:
+            f = form.get("file")
+            if not getattr(f, "filename", None):
+                raise HTTPException(422, "请选择字幕文件")
+            data = await f.read(MAX_UPLOAD + 1)
+            if len(data) > MAX_UPLOAD:
+                raise HTTPException(413, "上传超过 24 MiB")
+            from starlette.concurrency import run_in_threadpool
+            return await run_in_threadpool(self._check, studio.upload, str(form.get("target", "")), f.filename,
+                                           data, str(form.get("member") or ""), str(form.get("role") or "zh-Hans"))

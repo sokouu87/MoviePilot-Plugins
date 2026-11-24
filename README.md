@@ -1,41 +1,20 @@
 # MoviePilot-Plugins
 
-面向 MoviePilot 的个人插件仓库，目前主要维护字幕匹配、AI 字幕生成和 Emby 媒体库封面生成。
-
-## 展示图
-
-![插件界面](images/plugin-preview.svg)
-
-![字幕批量搜索](images/subtitle-batch-search.png)
-
-## 开发初衷
-
-这个仓库主要想把 MoviePilot 里的字幕处理做成一条顺手的链路：本地媒体库、在线字幕、手动上传、智能匹配、调轴、AI 翻译都能接起来。
-它不是 ChineseSubFinder 的复刻，而是在 MoviePilot 插件体系里延续“少折腾文件，多专注观影”的使用体验。
+个人 MoviePilot 插件仓库。
 
 ## 插件列表
 
 | 插件 | 目录 | 版本 | 主要功能 |
 | --- | --- | --- | --- |
-| 海拉鲁字幕大师 | `plugins.v2/subtitlemanualupload` | 0.1.104 | MoviePilot V2，支持 MPLite 接续 SubHD 人工核验 |
-| 海拉鲁字幕大师 | `plugins.v3/subtitlemanualupload` | 1.2.22 | MoviePilot V3，支持 MPLite 接续 SubHD 人工核验 |
+| 海拉鲁 AI 字幕 | `plugins.v2/subtitlemanualupload`、`plugins.v3/subtitlemanualupload` | 2.0.0 | ChatGPT 订阅、双语 ASS/SRT、SubHD 官网下载与手动上传 |
 | AI字幕生成(联动版) | `plugins.v2/autosubv3` | 3.5.54 | 音轨识别、字幕提取、AI 翻译、任务队列、联动字幕匹配 |
 | Emby媒体库封面生成 | `plugins.v2/mediacovergenerator` | 0.9.10 | 生成 Emby/Jellyfin 媒体库静态或动态封面 |
 
-## 字幕匹配
+## 海拉鲁 AI 字幕
 
-从 MoviePilot 本地整理记录中选择电影或剧集，完成字幕上传、在线搜索、批量匹配和落盘改名。
+新入库影片直接进入 AI 翻译队列。插件从英文外挂、内封字幕或本地 Whisper 识别结果获取原稿，使用 ChatGPT 订阅调研译名、分批精翻并审校全集。手动字幕从 SubHD 官网下载，回到选中的影片或集数上传。
 
-主要功能：
-
-- 支持电影、单集、整季维度的字幕匹配。
-- 支持 `.srt`、`.ass`、`.ssa`、`.sbv`、`.sub`、`.vtt`、`.webvtt`。
-- 支持 ZIP/RAR 字幕包解析。
-- 支持 SubHD、Zimuku、ASSRT、OpenSubtitles 等在线字幕来源。
-- 支持语言和格式偏好，自动选择合适字幕入库。
-- 支持繁体转简体、智能调轴、匹配历史管理。
-- 支持入库后自动搜索字幕。
-- 可联动 AI字幕生成(联动版)，把英文或外语字幕提交翻译。
+[安装、订阅授权与使用说明](plugins.v3/subtitlemanualupload/README.md)
 
 ## AI字幕生成(联动版)
 
@@ -70,17 +49,7 @@
 https://github.com/sokouu87/MoviePilot-Plugins
 ```
 
-如只测试字幕链路，建议同时安装：
-
-- 字幕匹配
-- AI字幕生成(联动版)
-
-## 注意事项
-
-- 字幕站点和 API 可能变化，在线下载不能保证所有来源始终可用。
-- RAR 解压依赖容器内或宿主机可用的解压工具。
-- 智能调轴依赖 `ffmpeg`、`ffprobe`、`numpy`、`pysubs2` 等环境能力。
-- AI 翻译质量取决于模型、提示词和原字幕质量。
+海拉鲁 AI 字幕可单独安装。2.0 沿用原插件 ID，已安装用户可在原条目升级。
 
 ## 致谢
 
@@ -102,7 +71,4 @@ https://github.com/sokouu87/MoviePilot-Plugins
 - `httpx`
 - `watchdog`
 - `pillow`
-- `pysubs2`
-- `rarfile`
-- `webrtcvad-wheels`
 - `numpy`

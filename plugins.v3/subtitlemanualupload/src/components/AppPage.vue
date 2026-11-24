@@ -1,1277 +1,192 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import '../styles/theme.css'
-import { createSubtitleManualUploadApi } from '../api/subtitleManualUploadApi'
-import { aiRestartSourceOptions, useAiTasks } from '../composables/useAiTasks'
-import { useAutoTransferQueue } from '../composables/useAutoTransferQueue'
-import { useMatchHistory } from '../composables/useMatchHistory'
-import { useMediaSearch } from '../composables/useMediaSearch'
-import { useOnlineSubtitles } from '../composables/useOnlineSubtitles'
-import { usePluginStatus } from '../composables/usePluginStatus'
-import { useTargets } from '../composables/useTargets'
-import { useTimelineTasks } from '../composables/useTimelineTasks'
-import { useUploadPreview } from '../composables/useUploadPreview'
-import AiTaskDialog from './AiTaskDialog.vue'
-import AutoTransferQueueDialog from './AutoTransferQueueDialog.vue'
-import MediaGrid from './MediaGrid.vue'
-import MatchHistoryPanel from './MatchHistoryPanel.vue'
-import MediaSearchPanel from './MediaSearchPanel.vue'
-import OnlineSubtitleDialog from './OnlineSubtitleDialog.vue'
-import SettingsDialog from './SettingsDialog.vue'
-import TargetDetailPanel from './TargetDetailPanel.vue'
-import UploadDialog from './UploadDialog.vue'
-import MobileSubtitlePage from '../mobile/MobileSubtitlePage.vue'
-import { useMobileViewport } from '../mobile/useMobileViewport'
-import {
-  buildOutputName,
-  compactTargetName,
-  errorMessage,
-  formatBytes,
-  formatMediaType,
-  formatOffset,
-  historyMediaStat,
-  mediaLabel,
-  mediaStat,
-  rarDependencyModeLabel,
-  seasonLabel,
-  targetLabel,
-  timelineMetaItems,
-  timelineResultText,
-  unwrapResponse,
-} from '../utils/formatters'
-import {
-  isOnlineResultDownloadable,
-  onlineProviderItems,
-  onlineResultKey,
-  onlineResultMeta,
-  providerName,
-  providerProgressColor,
-  providerProgressText,
-} from '../utils/onlineResult'
-import { isStreamTarget } from '../utils/targetState'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 
-const props = defineProps({
-  api: {
-    type: Object,
-    default: () => ({}),
-  },
-  pluginId: {
-    type: String,
-    default: 'SubtitleManualUpload',
-  },
-  navKey: {
-    type: String,
-    default: 'main',
-  },
-  hideTitle: {
-    type: Boolean,
-    default: false,
-  },
-})
+const props = defineProps({ api: Object, pluginId: { type: String, default: 'SubtitleManualUpload' } })
+const storeKey = 'hyrule-ai.selection.' + props.pluginId
+const query = ref(''), rows = ref([]), selected = ref(null), jobs = ref([]), more = ref(false)
+const file = ref(null), member = ref(''), members = ref([]), role = ref('zh-Hans'), input = ref(null)
+const busy = ref(false), message = ref(''), error = ref(''), index = ref(false), account = ref(''), configured = ref(true)
+const glossary = ref(null), meta = ref(null)
+let timer, debounce, searchSeq = 0, disposed = false
+const statuses = { done: '已完成', skipped: '已跳过', queued: '排队中', running: '处理中', failed: '失败' }
 
-const isMobileViewport = useMobileViewport()
-
-const pluginBase = computed(() => `plugin/${props.pluginId || 'SubtitleManualUpload'}`)
-const pluginApi = computed(() => createSubtitleManualUploadApi(props.api, pluginBase))
-const clearing = ref(false)
-const message = ref('')
-const error = ref('')
-const settingsOpen = ref(false)
-
-function handleSettingsSaved() {
-  settingsOpen.value = false
-  loadStatus()
+async function api(method, endpoint, body) {
+  const value = await props.api[method]('plugin/' + props.pluginId + '/' + endpoint, body)
+  if (value?.success === false) throw new Error(value.message || 'MoviePilot 请求失败')
+  return value?.data ?? value
 }
-
-const {
-  resolving,
-  selectedMedia,
-  detailTab,
-  seasons,
-  selectedSeason,
-  selectedTargetIds,
-  lockedTargetIds,
-  expandedDetailTargetIds,
-  visibleTargets,
-  selectedTargets,
-  targetById,
-  unlockedVisibleTargets,
-  allVisibleSelected,
-  isLocked,
-  lockedTargetPayload,
-  isTargetActionDisabled,
-  detailExpanded,
-  toggleDetailExpanded,
-  clearTargetState,
-  loadTargets,
-  selectMedia,
-  changeSeason,
-  resetSelection,
-  toggleSelectAll,
-  toggleTarget,
-  toggleLock,
-} = useTargets({
-  pluginApi,
-  unwrapResponse,
-  errorMessage,
-  error,
-  message,
-  mediaLabel,
-  clearRelatedState() {
-    clearUploadPreviewState()
-    resetAiTasks()
-    resetTimelineTasks()
-  },
-  beforeLoadTargets() {
-    preview.value = null
-  },
-  async afterTargetsLoaded(nextTargets) {
-    aiTaskScopeTargets.value = nextTargets
-    await loadAiTasks({ silent: true })
-    await loadTimelineTasks({ silent: true })
-  },
-  runSearch: () => runSearch(),
-})
-
-const {
-  searching,
-  searchKeyword,
-  mediaType,
-  medias,
-  mediaPage,
-  mediaPageSize,
-  mediaTotal,
-  mediaHasMore,
-  posterImageKey,
-  posterImageSrc,
-  markPosterFailed,
-  posterLoading,
-  posterFetchPriority,
-  runSearch,
-  loadMoreMedia,
-} = useMediaSearch({
-  pluginApi,
-  unwrapResponse,
-  errorMessage,
-  error,
-  message,
-  selectedMedia,
-  clearTargetState,
-})
-
-const {
-  autoTransferQueue,
-  autoQueueDialog,
-  autoQueueMutating,
-  autoQueueActionTaskId,
-  autoQueueTasks,
-  autoQueueSummaryText,
-  applyAutoTransferSummary,
-  stopAutoQueuePolling,
-  loadAutoTransferQueue,
-  retryAutoTransferTask,
-  clearAutoTransferHistory,
-} = useAutoTransferQueue({
-  pluginApi,
-  unwrapResponse,
-  errorMessage,
-  error,
-  message,
-})
-
-const {
-  rootTab,
-  matchHistoryLoading,
-  matchHistoryRefreshing,
-  matchHistoryItems,
-  matchHistoryTotal,
-  matchHistoryHasMore,
-  historyExpanded,
-  toggleHistoryExpanded,
-  historySeasonKey,
-  historySeasonExpanded,
-  toggleHistorySeasonExpanded,
-  historyTargetExpanded,
-  toggleHistoryTargetExpanded,
-  historyDeletableTargets,
-  historySelectedIds,
-  historySelectedCount,
-  allHistoryTargetsSelected,
-  toggleHistoryTarget,
-  toggleHistoryItemTargets,
-  historySeasonGroups,
-  historySeasonSelectedCount,
-  allHistorySeasonTargetsSelected,
-  historySeasonPartiallySelected,
-  toggleHistorySeasonTargets,
-  clearHistorySelectedSubtitles,
-  historySelectedTimelineTargets,
-  fixHistorySelectedTimeline,
-  fixHistorySubtitleTimeline,
-  stopHistoryTimelinePolling,
-  scheduleHistoryTimelinePolling,
-  submitRootSearch,
-  loadMatchHistory,
-  loadMoreMatchHistory,
-  setRootTab,
-  matchHistorySummary,
-} = useMatchHistory({
-  pluginApi,
-  unwrapResponse,
-  errorMessage,
-  error,
-  message,
-  clearing,
-  searchKeyword,
-  mediaType,
-  selectedMedia,
-  clearTargetState,
-  lockedTargetPayload,
-  isStreamTarget,
-  seasonLabel,
-  runSearch,
-  fixExistingTimeline: (...args) => fixExistingTimeline(...args),
-})
-
-const {
-  status,
-  loading,
-  refreshing,
-  indexStatus,
-  indexSummary,
-  archiveStatus,
-  rarAvailable,
-  rarPythonAvailable,
-  rarDependencyStatus,
-  timelineStatus,
-  timelineAvailable,
-  timelineConfiguredMaxOffset,
-  timelineNeedsRiskyConfirm,
-  timelineMissing,
-  loadStatus,
-  refreshIndex,
-  stopIndexRefreshPolling,
-} = usePluginStatus({
-  pluginApi,
-  unwrapResponse,
-  errorMessage,
-  error,
-  message,
-  rootTab,
-  selectedMedia,
-  selectedSeason,
-  applyAiStatus(nextAiStatus) {
-    aiTaskData.value = { ...aiTaskData.value, status: nextAiStatus }
-  },
-  applyAutoTransferSummary,
-  loadAutoTransferQueue,
-  loadTargets,
-  loadMatchHistory,
-  runSearch,
-})
-
-const {
-  preparing,
-  applying,
-  dragging,
-  uploadDialog,
-  uploadTitle,
-  uploadScopeTargets,
-  files,
-  preview,
-  fileInputRef,
-  fixTimeline,
-  batchLanguageSuffix,
-  lastWritten,
-  uploadTargets,
-  batchUploadTargets,
-  targetSelectItems,
-  canApply,
-  hasPreviewItems,
-  selectedPreviewItems,
-  selectedPreviewTargets,
-  allSelectedPreviewTargetsAreStream,
-  hasSelectedPreviewStreamTargets,
-  timelineEnabledForApply,
-  clearUploadPreviewState,
-  prepareOnlineUploadState,
-  openOnlinePreview,
-  openUploadDialog,
-  openBatchUpload,
-  openSingleUpload,
-  onPickFiles,
-  removeFile,
-  openFileDialog,
-  handleDrop,
-  handleDragOver,
-  handleDragLeave,
-  updatePreviewTarget,
-  updateLanguageSuffix,
-  togglePreviewItem,
-  applyBatchLanguageSuffix,
-  resetUploadPreview,
-  applyUpload,
-} = useUploadPreview({
-  pluginApi,
-  unwrapResponse,
-  errorMessage,
-  error,
-  message,
-  selectedTargets,
-  visibleTargets,
-  selectedMedia,
-  selectedSeason,
-  isLocked,
-  lockedTargetPayload,
-  loadTargets,
-  timelineAvailable,
-  timelineNeedsRiskyConfirm,
-  confirmRiskyTimelineOffset,
-  isStreamTarget,
-  compactTargetName,
-  seasonLabel,
-  buildOutputName,
-})
-
-const selectedSubtitleTargets = computed(() => selectedTargets.value.filter(target => !isLocked(target.id) && (target.subtitles || []).length))
-
-const {
-  timelineFixing,
-  timelineTaskData,
-  selectedTimelineTargets,
-  applyTimelineTaskData,
-  resetTimelineTasks,
-  stopTimelinePolling,
-  loadTimelineTasks,
-  timelineTaskForTarget,
-  timelineTaskText,
-  fixExistingTimeline,
-  fixSelectedDetailTimeline,
-} = useTimelineTasks({
-  pluginApi,
-  unwrapResponse,
-  errorMessage,
-  error,
-  message,
-  visibleTargets,
-  selectedSubtitleTargets,
-  lockedTargetPayload,
-  timelineAvailable,
-  timelineNeedsRiskyConfirm,
-  timelineMissing,
-  confirmRiskyTimelineOffset,
-  isStreamTarget,
-  timelineResultText,
-  loadMatchHistory,
-  scheduleHistoryTimelinePolling,
-})
-
-const {
-  aiSubmitting,
-  aiCancelling,
-  aiTasksLoading,
-  aiTaskDialog,
-  aiTaskDialogTarget,
-  aiTaskScopeTargets,
-  aiRestartSourcePolicy,
-  aiRestartSubtitlePath,
-  aiSelectedTaskIds,
-  aiStatusStripRef,
-  aiTaskData,
-  aiStatus,
-  aiEnabled,
-  aiAvailable,
-  aiHasActiveTasks,
-  aiBatchCancelTargets,
-  aiCapableBatchTargets,
-  aiBatchLabel,
-  aiSummaryText,
-  aiDialogTasks,
-  aiDialogHasScopeTargets,
-  aiDialogHasExistingTasks,
-  aiDialogHasActiveTasks,
-  aiDialogSelectedAllowedTasks,
-  aiDialogActionText,
-  aiDialogSourceLabel,
-  aiRestartSubtitleOptions,
-  applyAiTaskData,
-  resetAiTasks,
-  stopAiPolling,
-  loadAiTasks,
-  aiTaskForTarget,
-  isAiTaskActive,
-  isAiTaskAllowed,
-  aiTaskColor,
-  aiTaskIcon,
-  aiTaskTitle,
-  aiTaskStatusClass,
-  aiTaskIconForTask,
-  aiStatusText,
-  focusAiStatusStrip,
-  openAiTaskDialog,
-  openBatchAiGenerate,
-  cancelBatchAiGenerate,
-  cancelDialogAiTasks,
-  regenerateDialogAiTasks,
-  regenerateSingleAiTask,
-  openSingleAiGenerate,
-} = useAiTasks({
-  pluginApi,
-  unwrapResponse,
-  errorMessage,
-  error,
-  message,
-  status,
-  visibleTargets,
-  selectedMedia,
-  selectedSeason,
-  selectedTargets,
-  batchUploadTargets,
-  targetById,
-  isLocked,
-  lockedTargetPayload,
-  isStreamTarget,
-  formatBytes,
-})
-
-const {
-  onlineSearching,
-  onlineDownloading,
-  onlinePreviewDownloading,
-  onlineAiDownloading,
-  onlineError,
-  onlineVerification,
-  onlineDialog,
-  onlineAiConfirmDialog,
-  onlineTitle,
-  onlineKeyword,
-  onlineTargets,
-  onlineStatus,
-  onlineSelectedProviders,
-  onlineResults,
-  onlineLanguageFilter,
-  onlineProviderFilter,
-  onlineMessages,
-  onlineMessagesCollapsed,
-  onlineManualLinks,
-  selectedOnlineResultIds,
-  hasOnlineResults,
-  filteredOnlineResults,
-  onlineLanguageFilterItems,
-  onlineProviderFilterItems,
-  selectedOnlineResults,
-  canSubmitOnlineAiTranslate,
-  onlineMessageSummary,
-  onlineMessageType,
-  onlineProviderProgressItems,
-  onlineAiConfirmText,
-  onlineBatchLabel,
-  openBatchOnlineSearch,
-  openSingleOnlineSearch,
-  runOnlineSearch,
-  stopOnlineSearch,
-  closeOnlineDialog,
-  updateOnlineDialog,
-  toggleOnlineResult,
-  requestOnlineAiTranslate,
-  confirmOnlineAiTranslate,
-  downloadOnlinePreview,
-  uploadVerifiedSubtitle,
-  stopOnlineDownload,
-} = useOnlineSubtitles({
-  pluginApi,
-  unwrapResponse,
-  errorMessage,
-  error,
-  message,
-  selectedMedia,
-  selectedTargets,
-  selectedSeason,
-  batchUploadTargets,
-  isLocked,
-  lockedTargetPayload,
-  compactTargetName,
-  aiAvailable,
-  timelineNeedsRiskyConfirm,
-  confirmRiskyTimelineOffset,
-  prepareOnlineUploadState,
-  openOnlinePreview,
-  openUploadDialog,
-  closeUploadDialog() {
-    preview.value = null
-    uploadDialog.value = false
-  },
-  applyAiTaskData,
-  setAiTaskScopeTargets(targetsToSet) {
-    aiTaskScopeTargets.value = targetsToSet
-  },
-  loadAiTasks,
-  focusAiStatusStrip,
-  applyTimelineTaskData,
-  loadTimelineTasks,
-})
-
-const seasonCards = computed(() => {
-  if (selectedMedia.value?.media_type !== 'tv') return []
-  const total = seasons.value.reduce((sum, item) => sum + Number(item.local_count || 0), 0)
-  return [
-    { title: '全部季', subtitle: `${total} 集`, value: 'all', count: total },
-    ...seasons.value
-      .filter(item => item.available)
-      .map(item => ({
-        title: seasonLabel(item.season),
-        subtitle: `${item.local_count || 0} 集`,
-        value: item.season,
-        count: item.local_count || 0,
-      })),
-  ]
-})
-const matchHistoryRows = computed(() => visibleTargets.value.map(target => {
-  const subtitles = target.subtitles || []
-  const task = aiTaskForTarget(target)
-  const timelineTask = timelineTaskForTarget(target)
-  const written = (lastWritten.value || []).filter(item => (
-    item.target_label === target.label
-    || subtitles.some(subtitle => subtitle.path === item.output_path || subtitle.name === item.output_name)
-  ))
-  return {
-    target,
-    subtitles,
-    task,
-    timelineTask,
-    written,
-    hasTimelineRunning: applying.value && selectedPreviewTargets.value.some(item => item.id === target.id) && timelineEnabledForApply.value,
-  }
-}))
-const selectedRestorableTargets = computed(() => selectedSubtitleTargets.value.filter(target => (target.subtitles || []).some(subtitle => subtitle.backup_available)))
-
-function detailRowForTarget(target) {
-  return matchHistoryRows.value.find(row => row.target.id === target?.id) || {
-    target,
-    subtitles: target?.subtitles || [],
-    task: aiTaskForTarget(target),
-    timelineTask: timelineTaskForTarget(target),
-    written: [],
-  }
+function fail(e) {
+  error.value = e?.response?.data?.detail || e?.detail || e?.message || '请求失败'
 }
-
-async function restoreSubtitleBackup(target, subtitle) {
-  if (!target || !subtitle) return
-  clearing.value = true
-  error.value = ''
-  message.value = ''
+async function list(append = false) {
+  const seq = ++searchSeq
   try {
-    const response = await pluginApi.value.restoreSubtitleBackup({
-      target_id: target.id,
-      subtitle_path: subtitle.path,
-      subtitle_name: subtitle.name,
-      locked_target_ids: lockedTargetPayload(),
-    })
-    message.value = response?.message || `已恢复调轴前字幕：${subtitle.name}`
-    await loadTargets(selectedMedia.value, selectedSeason.value)
-  } catch (err) {
-    error.value = errorMessage(err, '恢复调轴前字幕失败')
-  } finally {
-    clearing.value = false
-  }
+    const res = await api('get', 'targets?q=' + encodeURIComponent(query.value) + '&offset=' + (append ? rows.value.length : 0))
+    if (disposed || seq !== searchSeq) return
+    rows.value = append ? rows.value.concat(res.targets) : res.targets
+    more.value = res.more
+    index.value = res.indexing
+    if (res.error) error.value = res.error
+  } catch (e) { if (seq === searchSeq) fail(e) }
 }
-
-async function restoreSelectedBackups() {
-  const items = []
-  selectedRestorableTargets.value.forEach(target => {
-    ;(target.subtitles || []).forEach(subtitle => {
-      if (subtitle.backup_available) items.push({ target, subtitle })
-    })
+async function loadJobs() {
+  const data = await api('get', 'jobs')
+  if (disposed) return
+  jobs.value = data.jobs
+  configured.value = data.configured
+  account.value = data.model + ' · ' + data.effort
+}
+function clearFile() {
+  file.value = null
+  member.value = ''
+  members.value = []
+  if (input.value) input.value.value = ''
+}
+function pick(item) {
+  selected.value = item
+  try { sessionStorage.setItem(storeKey, JSON.stringify(item)) } catch {}
+  clearFile()
+  glossary.value = null
+  meta.value = null
+  message.value = error.value = ''
+}
+async function act(fn) {
+  if (busy.value) return
+  busy.value = true
+  message.value = error.value = ''
+  try { await fn() } catch (e) { fail(e) } finally { busy.value = false }
+}
+function translate() {
+  return act(async () => {
+    const result = await api('post', 'translate', { target: selected.value.id })
+    message.value = '翻译任务 #' + result.id + ' 已进入队列'
+    await loadJobs()
   })
-  if (!items.length || clearing.value) return
-  const confirmed = window.confirm(`确认恢复选中集数的 ${items.length} 个调轴前备份？`)
-  if (!confirmed) return
-  clearing.value = true
-  error.value = ''
-  message.value = ''
-  try {
-    for (const item of items) {
-      await pluginApi.value.restoreSubtitleBackup({
-        target_id: item.target.id,
-        subtitle_path: item.subtitle.path,
-        subtitle_name: item.subtitle.name,
-        locked_target_ids: lockedTargetPayload(),
-      })
-    }
-    message.value = `已恢复 ${items.length} 个调轴前备份`
-    await loadTargets(selectedMedia.value, selectedSeason.value)
-  } catch (err) {
-    error.value = errorMessage(err, '批量恢复调轴前字幕失败')
-  } finally {
-    clearing.value = false
-  }
 }
-
-function confirmRiskyTimelineOffset(actionLabel = '智能调轴') {
-  if (!timelineNeedsRiskyConfirm.value) return false
-  return window.confirm(
-    `${actionLabel}当前允许最大偏移 ${timelineConfiguredMaxOffset.value}s。\n\n` +
-    '超过 120s 的调轴结果通常意味着错集、错版本或整季包映射错误，不建议超过 120s。\n\n' +
-    '确认后，本次请求才会允许 120-300s 的结果人工写入；自动入库不会放行高风险偏移。',
-  )
-}
-
-function timelineResultForTarget(row) {
-  if (row.timelineTask) return timelineTaskText(row.timelineTask)
-  if (row.hasTimelineRunning) return '智能调轴处理中'
-  const latest = [...(row.written || [])].reverse().find(item => item.timeline)
-  if (latest) return timelineResultText(latest)
-  if (isStreamTarget(row.target)) return 'STRM 资源不启用智能调轴'
-  return '暂无调轴记录'
-}
-
-async function deleteSubtitle(target, subtitle) {
-  if (!target || !subtitle) return
-  clearing.value = true
-  error.value = ''
-  message.value = ''
-  try {
-    const response = await pluginApi.value.deleteSubtitle({
-      target_id: target.id,
-      subtitle_path: subtitle.path,
-      subtitle_name: subtitle.name,
-      locked_target_ids: lockedTargetPayload(),
-    })
-    message.value = response?.message || `已删除外挂字幕：${subtitle.name}`
-    if (selectedMedia.value) {
-      await loadTargets(selectedMedia.value, selectedSeason.value)
+function upload() {
+  return act(async () => {
+    if (!file.value) throw new Error('请先选择字幕')
+    const data = new FormData()
+    data.append('target', selected.value.id)
+    data.append('role', role.value)
+    data.append('member', member.value)
+    data.append('file', file.value)
+    const res = await api('post', 'upload', data)
+    if (res.members) {
+      members.value = res.members
+      message.value = '请选择与当前影片或集数对应的字幕文件'
     } else {
-      await loadMatchHistory()
+      message.value = '已上传 ' + res.file + '（' + res.cues + ' 轴）'
+      clearFile()
     }
-  } catch (err) {
-    error.value = errorMessage(err, '删除外挂字幕失败')
-  } finally {
-    clearing.value = false
-  }
+  })
 }
-
-async function clearSelectedSubtitles() {
-  const targetIds = selectedSubtitleTargets.value.map(target => target.id)
-  if (!targetIds.length) return
-  clearing.value = true
-  error.value = ''
+function editGlossary() {
+  return act(async () => {
+    const res = await api('get', 'glossary?target=' + encodeURIComponent(selected.value.id))
+    glossary.value = JSON.stringify(res.glossary, null, 2)
+  })
+}
+function saveGlossary() {
+  return act(async () => {
+    await api('post', 'glossary', { target: selected.value.id, glossary: JSON.parse(glossary.value) })
+    glossary.value = null
+    message.value = '已保存本剧译名表'
+  })
+}
+function saveMeta() {
+  return act(async () => {
+    await api('post', 'metadata', { ...meta.value, target: selected.value.id })
+    const updated = await api('get', 'target?id=' + encodeURIComponent(selected.value.id))
+    pick(updated)
+    await list()
+    message.value = '作品资料已保存'
+  })
+}
+watch(query, () => { clearTimeout(debounce); debounce = setTimeout(() => list(), 200) })
+onMounted(async () => {
   try {
-    const response = await pluginApi.value.clearSubtitles({
-      target_ids: targetIds,
-      locked_target_ids: lockedTargetPayload(),
-    })
-    const data = unwrapResponse(response) || {}
-    const successMessage = response?.message || `已删除 ${data.count || 0} 个外挂字幕`
-    await loadTargets(selectedMedia.value, selectedSeason.value)
-    message.value = successMessage
-  } catch (err) {
-    error.value = errorMessage(err, '清空外挂字幕失败')
-  } finally {
-    clearing.value = false
-  }
-}
-
-// The mobile renderer consumes this view model only. Requests, polling, and write
-// guards stay in the domain composables above so desktop and mobile never diverge.
-const mobileView = reactive({
-  feedback: {
-    error,
-    message,
-  },
-  home: {
-    rootTab,
-    status,
-    indexSummary,
-    searchKeyword,
-    mediaType,
-    medias,
-    mediaTotal,
-    mediaHasMore,
-    searching,
-    refreshing,
-    posterImageSrc,
-    posterLoading,
-    posterFetchPriority,
-    mediaLabel,
-    mediaStat,
-    formatMediaType,
-  },
-  detail: {
-    selectedMedia,
-    selectedSeason,
-    selectedTargets,
-    selectedTargetIds,
-    visibleTargets,
-    seasonCards,
-    resolving,
-    aiEnabled,
-    aiAvailable,
-    aiSubmitting,
-    aiCancelling,
-    aiBatchLabel,
-    aiBatchCancelTargets,
-    aiCapableBatchTargets,
-    onlineSearching,
-    onlineBatchLabel,
-    batchUploadTargets,
-    unlockedVisibleTargets,
-    allVisibleSelected,
-    clearing,
-    selectedTimelineTargets,
-    timelineFixing,
-    timelineAvailable,
-    selectedRestorableTargets,
-    lastWritten,
-    posterImageSrc,
-    mediaLabel,
-    formatMediaType,
-    compactTargetName,
-    formatBytes,
-    isLocked,
-    isTargetActionDisabled,
-    isStreamTarget,
-    detailExpanded,
-    detailRowForTarget,
-    aiTaskForTarget,
-    aiStatusText,
-    timelineTaskForTarget,
-    timelineMetaItems,
-    timelineResultForTarget,
-    timelineResultText,
-  },
-  history: {
-    panelProps: {
-      rootTab,
-      matchHistoryItems,
-      matchHistoryTotal,
-      matchHistoryHasMore,
-      matchHistoryLoading,
-      matchHistoryRefreshing,
-      clearing,
-      timelineFixing,
-      timelineAvailable,
-      posterImageSrc,
-      mediaLabel,
-      posterLoading,
-      posterFetchPriority,
-      markPosterFailed,
-      formatMediaType,
-      historyMediaStat,
-      historyExpanded,
-      toggleHistoryExpanded,
-      historySelectedCount,
-      historyDeletableTargets,
-      toggleHistoryItemTargets,
-      allHistoryTargetsSelected,
-      clearHistorySelectedSubtitles,
-      historySelectedTimelineTargets,
-      fixHistorySelectedTimeline,
-      historySeasonGroups,
-      historySeasonKey,
-      allHistorySeasonTargetsSelected,
-      historySeasonPartiallySelected,
-      toggleHistorySeasonTargets,
-      historySeasonExpanded,
-      toggleHistorySeasonExpanded,
-      historySeasonSelectedCount,
-      historySelectedIds,
-      toggleHistoryTarget,
-      historyTargetExpanded,
-      toggleHistoryTargetExpanded,
-      compactTargetName,
-      isTargetActionDisabled,
-      openSingleOnlineSearch,
-      timelineTaskText,
-      timelineMetaItems,
-      formatBytes,
-      fixHistorySubtitleTimeline,
-      isStreamTarget,
-      deleteSubtitle,
-    },
-  },
+    const saved = JSON.parse(sessionStorage.getItem(storeKey) || 'null')
+    if (saved?.id) {
+      try { selected.value = await api('get', 'target?id=' + encodeURIComponent(saved.id)) }
+      catch { sessionStorage.removeItem(storeKey) }
+    }
+    await Promise.all([list(), loadJobs()])
+  } catch (e) { fail(e) }
+  if (disposed) return
+  timer = setInterval(async () => {
+    try { await loadJobs(); if (index.value) await list() } catch (e) { fail(e) }
+  }, 5000)
 })
-
-const mobileActions = {
-  home: {
-    setRootTab,
-    setSearchKeyword(value) {
-      searchKeyword.value = value || ''
-    },
-    setMediaType(value) {
-      mediaType.value = value || 'all'
-    },
-    submitSearch: submitRootSearch,
-    refreshIndex,
-    selectMedia,
-    markPosterFailed,
-    loadMoreMedia,
-    openAutoQueue() {
-      autoQueueDialog.value = true
-    },
-  },
-  detail: {
-    resetSelection,
-    markPosterFailed,
-    loadTargets,
-    changeSeason,
-    toggleSelectAll,
-    openBatchUpload,
-    openBatchAiGenerate,
-    cancelBatchAiGenerate,
-    openBatchOnlineSearch,
-    clearSelectedSubtitles,
-    fixSelectedDetailTimeline,
-    restoreSelectedBackups,
-    toggleTarget,
-    toggleDetailExpanded,
-    openSingleAiGenerate,
-    openSingleOnlineSearch,
-    toggleLock,
-    openSingleUpload,
-    fixHistorySubtitleTimeline,
-    restoreSubtitleBackup,
-    deleteSubtitle,
-  },
-  history: {
-    loadMoreMatchHistory,
-  },
-}
-
-onMounted(() => {
-  loadStatus()
-  loadAutoTransferQueue()
-  runSearch()
-})
-
-onBeforeUnmount(() => {
-  stopAiPolling()
-  stopTimelinePolling()
-  stopHistoryTimelinePolling()
-  stopAutoQueuePolling()
-  stopIndexRefreshPolling()
-})
-
-defineExpose({
-  loadStatus,
-  refreshIndex,
-  runSearch,
-  loading,
-  searching,
-  resolving,
-  refreshing,
-  preparing,
-  applying,
-  clearing,
-  aiSubmitting,
-  aiCancelling,
-  aiTasksLoading,
-  onlineSearching,
-  onlineDownloading,
-})
+onBeforeUnmount(() => { disposed = true; clearInterval(timer); clearTimeout(debounce) })
 </script>
 
 <template>
-  <VToolbar v-if="!props.hideTitle" density="comfortable" color="transparent">
-    <div class="text-subtitle-1 ms-3">海拉鲁字幕大师</div>
-    <VSpacer />
-    <VTooltip text="插件设置" location="bottom">
-      <template #activator="{ props: tooltipProps }">
-        <VBtn
-          v-bind="tooltipProps"
-          icon="mdi-cog-outline"
-          variant="text"
-          aria-label="插件设置"
-          @click="settingsOpen = true"
-        />
-      </template>
-    </VTooltip>
-  </VToolbar>
-  <SettingsDialog
-    v-if="settingsOpen"
-    :api="props.api"
-    :plugin-id="props.pluginId"
-    @close="settingsOpen = false"
-    @saved="handleSettingsSaved"
-  />
-
-  <MobileSubtitlePage
-    v-if="isMobileViewport"
-    :view="mobileView"
-    :actions="mobileActions"
-  />
-
-  <div v-else class="subtitle-upload-page">
-    <div v-if="!selectedMedia" class="root-tabs">
-      <button
-        type="button"
-        :class="{ active: rootTab === 'match' }"
-        @click="setRootTab('match')"
-      >
-        字幕匹配
-      </button>
-      <button
-        type="button"
-        :class="{ active: rootTab === 'history' }"
-        @click="setRootTab('history')"
-      >
-        匹配历史
-      </button>
-    </div>
-
-    <VAlert
-      v-if="error"
-      class="mb-4"
-      type="error"
-      variant="tonal"
-      :text="error"
-    />
-    <VAlert
-      v-else-if="message"
-      class="mb-4"
-      type="success"
-      variant="tonal"
-      :text="message"
-    />
-
-    <section v-if="!selectedMedia" class="media-stage">
-      <MediaSearchPanel
-        v-model:search-keyword="searchKeyword"
-        v-model:media-type="mediaType"
-        :root-tab="rootTab"
-        :match-history-summary="matchHistorySummary"
-        :index-summary="indexSummary"
-        :auto-queue-summary-text="autoQueueSummaryText"
-        :refreshing="refreshing"
-        :match-history-loading="matchHistoryLoading || matchHistoryRefreshing"
-        :searching="searching"
-        @open-auto-queue="autoQueueDialog = true"
-        @refresh-index="refreshIndex"
-        @submit="submitRootSearch"
-      />
-
-      <MediaGrid
-        :root-tab="rootTab"
-        :medias="medias"
-        :media-total="mediaTotal"
-        :media-has-more="mediaHasMore"
-        :searching="searching"
-        :format-media-type="formatMediaType"
-        :media-label="mediaLabel"
-        :media-stat="mediaStat"
-        :poster-image-src="posterImageSrc"
-        :poster-loading="posterLoading"
-        :poster-fetch-priority="posterFetchPriority"
-        @select-media="selectMedia"
-        @mark-poster-failed="markPosterFailed"
-        @load-more="loadMoreMedia"
-      />
-
-      <MatchHistoryPanel
-        :root-tab="rootTab"
-        :match-history-items="matchHistoryItems"
-        :match-history-total="matchHistoryTotal"
-        :match-history-has-more="matchHistoryHasMore"
-        :match-history-loading="matchHistoryLoading"
-        :match-history-refreshing="matchHistoryRefreshing"
-        :clearing="clearing"
-        :timeline-fixing="timelineFixing"
-        :timeline-available="timelineAvailable"
-        :poster-image-src="posterImageSrc"
-        :media-label="mediaLabel"
-        :poster-loading="posterLoading"
-        :poster-fetch-priority="posterFetchPriority"
-        :mark-poster-failed="markPosterFailed"
-        :format-media-type="formatMediaType"
-        :history-media-stat="historyMediaStat"
-        :history-expanded="historyExpanded"
-        :toggle-history-expanded="toggleHistoryExpanded"
-        :history-selected-count="historySelectedCount"
-        :history-deletable-targets="historyDeletableTargets"
-        :toggle-history-item-targets="toggleHistoryItemTargets"
-        :all-history-targets-selected="allHistoryTargetsSelected"
-        :clear-history-selected-subtitles="clearHistorySelectedSubtitles"
-        :history-selected-timeline-targets="historySelectedTimelineTargets"
-        :fix-history-selected-timeline="fixHistorySelectedTimeline"
-        :history-season-groups="historySeasonGroups"
-        :history-season-key="historySeasonKey"
-        :all-history-season-targets-selected="allHistorySeasonTargetsSelected"
-        :history-season-partially-selected="historySeasonPartiallySelected"
-        :toggle-history-season-targets="toggleHistorySeasonTargets"
-        :history-season-expanded="historySeasonExpanded"
-        :toggle-history-season-expanded="toggleHistorySeasonExpanded"
-        :history-season-selected-count="historySeasonSelectedCount"
-        :history-selected-ids="historySelectedIds"
-        :toggle-history-target="toggleHistoryTarget"
-        :history-target-expanded="historyTargetExpanded"
-        :toggle-history-target-expanded="toggleHistoryTargetExpanded"
-        :compact-target-name="compactTargetName"
-        :is-target-action-disabled="isTargetActionDisabled"
-        :open-single-online-search="openSingleOnlineSearch"
-        :timeline-task-text="timelineTaskText"
-        :timeline-meta-items="timelineMetaItems"
-        :format-bytes="formatBytes"
-        :fix-history-subtitle-timeline="fixHistorySubtitleTimeline"
-        :is-stream-target="isStreamTarget"
-        :delete-subtitle="deleteSubtitle"
-        @load-more-match-history="loadMoreMatchHistory"
-      />
+  <main class="studio">
+    <header><h2>海拉鲁 AI 字幕</h2><span>{{ account }}</span></header>
+    <p v-if="!configured" role="status">请在插件设置中填入本机订阅线路密钥，或启用已配置的 AutoSubv3 订阅线路。</p>
+    <p v-if="error" class="err" role="alert">{{ error }}</p>
+    <p v-if="message" role="status">{{ message }}</p>
+    <section>
+      <h3>选择影片或剧集</h3>
+      <div class="row"><input v-model="query" type="search" aria-label="搜索媒体" placeholder="输入片名、集数或文件名">
+        <button :disabled="busy || index" @click="act(async () => { await api('post','refresh',{}); await list() })">{{ index ? '正在索引…' : '刷新媒体' }}</button></div>
+      <ul class="choices"><li v-for="t in rows" :key="t.id"><button :disabled="busy" :aria-pressed="selected?.id===t.id" @click="pick(t)">
+        <strong>{{ t.label }}</strong><small>{{ t.file }}</small></button></li></ul>
+      <p v-if="!rows.length">{{ index ? '正在读取媒体库…' : '没有匹配的媒体' }}</p>
+      <button v-if="more" @click="list(true)">更多结果</button>
     </section>
-
-    <section v-else class="episode-stage">
-      <TargetDetailPanel
-        ref="aiStatusStripRef"
-        :selected-media="selectedMedia"
-        :selected-season="selectedSeason"
-        :selected-targets="selectedTargets"
-        :selected-target-ids="selectedTargetIds"
-        :locked-target-ids="lockedTargetIds"
-        :visible-targets="visibleTargets"
-        :season-cards="seasonCards"
-        :resolving="resolving"
-        :ai-enabled="aiEnabled"
-        :ai-available="aiAvailable"
-        :ai-has-active-tasks="aiHasActiveTasks"
-        :ai-tasks-loading="aiTasksLoading"
-        :ai-summary-text="aiSummaryText"
-        :ai-status="aiStatus"
-        :all-visible-selected="allVisibleSelected"
-        :unlocked-visible-targets="unlockedVisibleTargets"
-        :ai-capable-batch-targets="aiCapableBatchTargets"
-        :ai-submitting="aiSubmitting"
-        :ai-batch-label="aiBatchLabel"
-        :ai-batch-cancel-targets="aiBatchCancelTargets"
-        :ai-cancelling="aiCancelling"
-        :online-searching="onlineSearching"
-        :online-batch-label="onlineBatchLabel"
-        :batch-upload-targets="batchUploadTargets"
-        :clearing="clearing"
-        :selected-timeline-targets="selectedTimelineTargets"
-        :timeline-fixing="timelineFixing"
-        :timeline-available="timelineAvailable"
-        :selected-restorable-targets="selectedRestorableTargets"
-        :last-written="lastWritten"
-        :poster-image-src="posterImageSrc"
-        :media-label="mediaLabel"
-        :format-media-type="formatMediaType"
-        :compact-target-name="compactTargetName"
-        :format-bytes="formatBytes"
-        :is-locked="isLocked"
-        :is-target-action-disabled="isTargetActionDisabled"
-        :is-stream-target="isStreamTarget"
-        :detail-expanded="detailExpanded"
-        :detail-row-for-target="detailRowForTarget"
-        :ai-task-for-target="aiTaskForTarget"
-        :ai-task-status-class="aiTaskStatusClass"
-        :ai-task-icon="aiTaskIcon"
-        :ai-task-color="aiTaskColor"
-        :ai-task-title="aiTaskTitle"
-        :ai-status-text="aiStatusText"
-        :timeline-result-for-target="timelineResultForTarget"
-        :timeline-meta-items="timelineMetaItems"
-        :timeline-task-for-target="timelineTaskForTarget"
-        :timeline-result-text="timelineResultText"
-        @reset-selection="resetSelection"
-        @mark-poster-failed="markPosterFailed"
-        @load-targets="loadTargets"
-        @change-season="changeSeason"
-        @open-ai-task-dialog="openAiTaskDialog"
-        @toggle-select-all="toggleSelectAll"
-        @open-batch-upload="openBatchUpload"
-        @open-batch-ai-generate="openBatchAiGenerate"
-        @cancel-batch-ai-generate="cancelBatchAiGenerate"
-        @open-batch-online-search="openBatchOnlineSearch"
-        @clear-selected-subtitles="clearSelectedSubtitles"
-        @fix-selected-detail-timeline="fixSelectedDetailTimeline"
-        @restore-selected-backups="restoreSelectedBackups"
-        @toggle-target="toggleTarget"
-        @toggle-detail-expanded="toggleDetailExpanded"
-        @open-single-ai-generate="openSingleAiGenerate"
-        @open-single-online-search="openSingleOnlineSearch"
-        @toggle-lock="toggleLock"
-        @open-single-upload="openSingleUpload"
-        @fix-history-subtitle-timeline="fixHistorySubtitleTimeline"
-        @restore-subtitle-backup="restoreSubtitleBackup"
-        @delete-subtitle="deleteSubtitle"
-      />
+    <section v-if="selected">
+      <h3>{{ selected.label }}</h3><p class="filename">{{ selected.file }}</p>
+      <div class="row"><button class="primary" :disabled="busy || !configured" @click="translate">AI 翻译</button>
+        <button :disabled="busy" @click="editGlossary">本剧译名表</button>
+        <button :disabled="busy" @click="meta = {...selected.meta}">作品资料</button></div>
+      <form v-if="meta" @submit.prevent="saveMeta"><label v-for="(label,k) in {title:'片名',year:'年份',season:'季',episode:'集'}" :key="k">{{ label }}<input v-model="meta[k]"></label>
+        <button :disabled="busy">保存资料</button><button type="button" @click="meta=null">取消</button></form>
+      <form v-if="glossary !== null" @submit.prevent="saveGlossary">
+        <label>译名表 JSON<textarea v-model="glossary" rows="10"></textarea></label>
+        <label>从文件导入<input type="file" accept=".json" @change="e => act(async () => { const f = e.target.files[0]; if (f) glossary = await f.text() })"></label>
+        <button :disabled="busy">保存译名表</button><button type="button" @click="glossary=null">取消</button></form>
+      <h4>SubHD 手动字幕</h4>
+      <a :href="selected.search_url" target="_blank" rel="noopener noreferrer">在 SubHD 搜索 ↗</a>
+      <p>到官网完成验证和下载，回到此处上传到上方影片。RAR 或 7z 请先解压。</p>
+      <label>字幕文件<input ref="input" type="file" accept=".srt,.ass,.ssa,.zip" @change="e => { file=e.target.files[0]; members=[]; member='' }"></label>
+      <label v-if="members.length">压缩包成员<select v-model="member"><option disabled value="">请选择对应集数</option><option v-for="name in members" :key="name">{{ name }}</option></select></label>
+      <div class="row"><label>用途<select v-model="role"><option value="zh-Hans">简中成品</option><option value="zh-Hant">繁中成品</option><option value="zh-en">中英成品</option><option value="eng">英文原稿，供 AI 翻译</option></select></label>
+        <button :disabled="busy || !file || (members.length && !member)" @click="upload">上传到当前影片</button></div>
     </section>
-
-  </div>
-
-  <AutoTransferQueueDialog
-      v-model="autoQueueDialog"
-      :mobile="isMobileViewport"
-      :auto-queue-summary-text="autoQueueSummaryText"
-      :auto-transfer-queue="autoTransferQueue"
-      :auto-queue-tasks="autoQueueTasks"
-      :auto-queue-mutating="autoQueueMutating"
-      :auto-queue-action-task-id="autoQueueActionTaskId"
-      @load-auto-transfer-queue="loadAutoTransferQueue"
-      @retry-auto-transfer-task="retryAutoTransferTask"
-      @force-auto-transfer-task="task => retryAutoTransferTask(task, { forceLowConfidence: true })"
-      @clear-auto-transfer-history="clearAutoTransferHistory"
-    />
-
-  <AiTaskDialog
-      v-model="aiTaskDialog"
-      :mobile="isMobileViewport"
-      v-model:ai-restart-source-policy="aiRestartSourcePolicy"
-      v-model:ai-restart-subtitle-path="aiRestartSubtitlePath"
-      v-model:ai-selected-task-ids="aiSelectedTaskIds"
-      :ai-task-dialog-target="aiTaskDialogTarget"
-      :compact-target-name="compactTargetName"
-      :ai-summary-text="aiSummaryText"
-      :ai-dialog-has-active-tasks="aiDialogHasActiveTasks"
-      :ai-cancelling="aiCancelling"
-      :ai-available="aiAvailable"
-      :ai-dialog-tasks="aiDialogTasks"
-      :ai-dialog-has-scope-targets="aiDialogHasScopeTargets"
-      :ai-dialog-has-existing-tasks="aiDialogHasExistingTasks"
-      :ai-dialog-selected-allowed-tasks="aiDialogSelectedAllowedTasks"
-      :ai-submitting="aiSubmitting"
-      :ai-dialog-action-text="aiDialogActionText"
-      :ai-tasks-loading="aiTasksLoading"
-      :ai-status="aiStatus"
-      :ai-restart-source-options="aiRestartSourceOptions"
-      :ai-dialog-source-label="aiDialogSourceLabel"
-      :ai-restart-subtitle-options="aiRestartSubtitleOptions"
-      :is-ai-task-allowed="isAiTaskAllowed"
-      :ai-task-icon-for-task="aiTaskIconForTask"
-      :ai-status-text="aiStatusText"
-      @cancel-dialog-ai-tasks="cancelDialogAiTasks"
-      @regenerate-dialog-ai-tasks="regenerateDialogAiTasks"
-      @load-ai-tasks="loadAiTasks"
-      @regenerate-single-ai-task="regenerateSingleAiTask"
-    />
-
-  <OnlineSubtitleDialog
-      v-model="onlineDialog"
-      :mobile="isMobileViewport"
-      v-model:online-keyword="onlineKeyword"
-      v-model:online-selected-providers="onlineSelectedProviders"
-      v-model:online-messages-collapsed="onlineMessagesCollapsed"
-      v-model:online-language-filter="onlineLanguageFilter"
-      v-model:online-provider-filter="onlineProviderFilter"
-      v-model:online-ai-confirm-dialog="onlineAiConfirmDialog"
-      :online-title="onlineTitle"
-      :online-targets="onlineTargets"
-      :selected-online-results="selectedOnlineResults"
-      :online-ai-downloading="onlineAiDownloading"
-      :online-preview-downloading="onlinePreviewDownloading"
-      :can-submit-online-ai-translate="canSubmitOnlineAiTranslate"
-      :online-downloading="onlineDownloading"
-      :online-provider-items="onlineProviderItems"
-      :online-searching="onlineSearching"
-      :online-error="onlineError"
-      :online-verification="onlineVerification"
-      :online-messages="onlineMessages"
-      :online-message-type="onlineMessageType"
-      :online-message-summary="onlineMessageSummary"
-      :has-online-results="hasOnlineResults"
-      :filtered-online-results="filteredOnlineResults"
-      :online-results="onlineResults"
-      :online-language-filter-items="onlineLanguageFilterItems"
-      :online-provider-filter-items="onlineProviderFilterItems"
-      :online-provider-progress-items="onlineProviderProgressItems"
-      :selected-online-result-ids="selectedOnlineResultIds"
-      :online-manual-links="onlineManualLinks"
-      :online-ai-confirm-text="onlineAiConfirmText"
-      :provider-progress-color="providerProgressColor"
-      :provider-progress-text="providerProgressText"
-      :provider-name="providerName"
-      :online-result-key="onlineResultKey"
-      :online-result-meta="onlineResultMeta"
-      :is-online-result-downloadable="isOnlineResultDownloadable"
-      @update:model-value="updateOnlineDialog"
-      @download-online-preview="downloadOnlinePreview"
-      @upload-verified-subtitle="uploadVerifiedSubtitle"
-      @request-online-ai-translate="requestOnlineAiTranslate"
-      @stop-online-download="stopOnlineDownload"
-      @close-online-dialog="closeOnlineDialog"
-      @run-online-search="runOnlineSearch"
-      @stop-online-search="stopOnlineSearch"
-      @toggle-online-result="toggleOnlineResult"
-      @confirm-online-ai-translate="confirmOnlineAiTranslate"
-    />
-  <UploadDialog
-      v-model="uploadDialog"
-      :mobile="isMobileViewport"
-      v-model:fix-timeline="fixTimeline"
-      v-model:batch-language-suffix="batchLanguageSuffix"
-      :upload-title="uploadTitle"
-      :has-preview-items="hasPreviewItems"
-      :all-selected-preview-targets-are-stream="allSelectedPreviewTargetsAreStream"
-      :has-selected-preview-stream-targets="hasSelectedPreviewStreamTargets"
-      :timeline-available="timelineAvailable"
-      :applying="applying"
-      :can-apply="canApply"
-      :dragging="dragging"
-      :preparing="preparing"
-      :rar-python-available="rarPythonAvailable"
-      :rar-available="rarAvailable"
-      :archive-status="archiveStatus"
-      :rar-dependency-status="rarDependencyStatus"
-      :timeline-missing="timelineMissing"
-      :files="files"
-      :preview="preview"
-      :target-select-items="targetSelectItems"
-      :upload-targets="uploadTargets"
-      :format-bytes="formatBytes"
-      :rar-dependency-mode-label="rarDependencyModeLabel"
-      :build-output-name="buildOutputName"
-      @reset-upload-preview="resetUploadPreview"
-      @apply-upload="applyUpload"
-      @pick-files="onPickFiles"
-      @drop="handleDrop"
-      @dragover="handleDragOver"
-      @dragleave="handleDragLeave"
-      @remove-file="removeFile"
-      @apply-batch-language-suffix="applyBatchLanguageSuffix"
-      @toggle-preview-item="togglePreviewItem"
-      @update-preview-target="updatePreviewTarget"
-      @update-language-suffix="updateLanguageSuffix"
-  />
+    <section><h3>翻译任务</h3><p v-if="!jobs.length">尚无翻译任务</p>
+      <article v-for="job in jobs" :key="job.id"><strong>{{ job.file }}</strong>
+        <p>#{{ job.id }} · {{ statuses[job.state] }} · {{ job.detail }}</p>
+        <button v-if="job.state==='failed'" :disabled="busy" @click="act(async () => { await api('post','retry',{id:job.id}); await loadJobs() })">从断点重试</button>
+        <details v-if="job.report.files"><summary>字幕与审校记录</summary>
+          <p>{{ job.report.source }} · {{ job.report.model }} · {{ job.report.cues }} 轴</p>
+          <p v-for="f in job.report.files" :key="f">{{ f }}</p>
+          <p v-for="(problems,id) in job.report.warnings" :key="id">第 {{ id }} 轴 · {{ problems.join('、') }}</p>
+          <p v-for="a in job.report.ambiguities" :key="a.id">第 {{ a.id }} 轴 · {{ a.options.join(' / ') }} · {{ a.reason }}</p>
+          <div v-for="url in job.report.sources" :key="url"><a :href="url" target="_blank" rel="noopener noreferrer">{{ url }}</a></div>
+        </details></article>
+    </section>
+  </main>
 </template>
 
 <style scoped>
-.subtitle-upload-page {
-  min-height: 100%;
-  padding: 24px;
-  background: var(--smu-page-bg);
-  color: var(--smu-text);
-  font-family: "LXGW WenKai Screen", "Noto Serif SC", "PingFang SC", sans-serif;
-}
-
-.root-tabs {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.root-tabs button {
-  padding: 9px 16px;
-  border: 1px solid var(--smu-border);
-  border-radius: 999px;
-  background: var(--smu-card-bg);
-  color: var(--smu-text-muted);
-  font-weight: 900;
-}
-
-.root-tabs button.active {
-  border-color: var(--smu-border-active);
-  background: var(--smu-card-bg-active);
-  color: var(--smu-accent);
-  box-shadow: inset 0 -3px 0 var(--smu-accent);
-}
-
-.media-stage,
-.episode-stage {
-  display: grid;
-  gap: 16px;
-}
-
-@media (max-width: 900px) {
-  .subtitle-upload-page {
-    padding: 14px;
-  }
-}
+.studio{max-width:960px;margin:auto;padding:1rem;color:inherit;font:inherit;overflow-wrap:anywhere}
+.studio header,.row{display:flex;align-items:center;flex-wrap:wrap;gap:.7rem}
+.studio header{justify-content:space-between}
+.studio section{padding:1.1rem 0;border-top:1px solid rgba(128,128,128,.32)}
+.studio h2,.studio h3,.studio h4,.studio p{margin:.45rem 0 .7rem}
+.studio h4{margin-top:1.35rem}
+.studio label{display:block;margin:.35rem 0}
+.studio input,.studio select,.studio textarea,.studio button{border:1px solid #8888;border-radius:6px;padding:.42rem .65rem;font:inherit;color:inherit}
+.studio input,.studio textarea,.studio select{max-width:100%;background:rgb(var(--v-theme-surface,255,255,255))}
+.studio textarea{display:block;width:100%}
+.studio button{cursor:pointer}
+.studio button:disabled{opacity:.55;cursor:default}
+.studio button:focus-visible,.studio a:focus-visible{outline:2px solid currentColor}
+.studio .primary,.studio button[aria-pressed=true]{background:#225d52;color:white}
+.studio .choices{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));padding:0;gap:.4rem;margin:.6rem 0;max-height:18rem;overflow:auto}
+.choices button{display:block;width:100%;text-align:left;overflow-wrap:anywhere}.choices small{display:block}
+.studio article{border-bottom:1px solid #8884;padding:.6rem 0}.studio a{text-decoration:underline}
+.studio .err{color:rgb(var(--v-theme-error,184,51,40))}.studio input[type=search]{flex:1}
 </style>
