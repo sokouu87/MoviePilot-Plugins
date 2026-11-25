@@ -39,6 +39,8 @@ class Subtitles(unittest.TestCase):
         self.assertEqual([(c.id, c.en, c.italic) for c in cues], [(1, "Hello.", True), (2, "", False), (3, "", False)])
         ass, srt = render(cues, {1:item(1, r"你{\N}好", note="示例"), 2:item(2, "枪声","key_sfx"), 3:item(3,"","sdh_drop")})
         self.assertTrue(ass.startswith(codecs.BOM_UTF8))
+        self.assertIn("Style: Default,PingFang SC,64.8,", ass.decode())
+        self.assertIn("Style: Eng,Helvetica,40.5,", ass.decode())
         self.assertIn(r"{\b500}你｛＼N｝好\N{\rEng}{\i1}Hello.", ass.decode("utf-8-sig"))
         self.assertIn("0:01:00.00,0:01:00.01",ass.decode())
         self.assertIn("Dialogue: 1,",ass.decode())

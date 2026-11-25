@@ -158,7 +158,11 @@ function badges(row) {
   const source = job?.report?.source || ''
   const files = job?.report?.files || []
   if (row.original) result.push(['原盘', 'secondary'])
-  if (row.chinese.includes('embedded') || /内封|内嵌/.test(source)) result.push(['视频内嵌字幕', 'info'])
+  const scripts = row.chinese_scripts ?? []
+  if (scripts.includes('hans')) result.push(['内嵌简中', 'var(--embedded-chinese-color)'])
+  if (scripts.includes('hant')) result.push(['内嵌繁中', 'var(--embedded-chinese-color)'])
+  if (!scripts.length && (row.chinese.includes('embedded') || /内封|内嵌/.test(source)))
+    result.push(['视频内嵌字幕', 'info'])
   if (row.chinese.includes('external')) result.push(['外挂中文', 'success'])
   if (job?.state === 'done' && (files.some(f => f.endsWith('.zh-en.ai.ass')) && files.some(f => f.endsWith('.zh-en.ai.srt'))
       || /生成双语 ASS 和 SRT/.test(job.detail))) result.push(['已生成双语 ASS 和 SRT', 'success'])
@@ -312,12 +316,16 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
 
 <style scoped>
 .records {
+  --embedded-chinese-color: #5e35b1;
   --paper: rgb(var(--v-theme-surface, 255, 255, 255));
   --muted: rgba(var(--v-theme-on-surface, 38, 38, 47), .72);
   --line: rgba(var(--v-border-color, 92, 92, 110), .18);
   min-height: 100%;
   color: rgb(var(--v-theme-on-surface, 38, 38, 47));
   background: rgb(var(--v-theme-background, 244, 244, 248));
+}
+@supports (color: light-dark(black, white)) {
+  .records { --embedded-chinese-color: light-dark(#5e35b1, #d1b8ff); }
 }
 .toolbar {
   position: sticky;

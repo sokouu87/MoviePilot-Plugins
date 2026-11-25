@@ -28,11 +28,22 @@ def test_full_chinese_bilingual_and_limited_tracks():
         track("chi", Codec="PGSSUB"), track("eng", Title="English SDH"),
     ], path, set(), {})
     assert result == {"state": "present", "reason": "", "english": True, "bilingual": True,
-                      "chinese": ["embedded", "external"]}
+                      "chinese": ["embedded", "external"], "chinese_scripts": []}
     limited = classify([VIDEO, track("chi", IsForced=True), track("eng")], path, set(), {})
     assert limited["state"] == "missing" and limited["english"]
     assert limited["reason"] == "只有强制或附注中文"
     assert not classify([VIDEO, track("eng", Codec="PGSSUB")], path, set(), {})["english"]
+
+
+def test_embedded_chinese_scripts_require_marked_full_tracks():
+    path = "/media/影片.mkv"
+    result = classify([VIDEO, track("chi", Title="Traditional"), track("chi", Title="Simplified")], path, set(), {})
+    assert result["chinese"] == ["embedded"] and result["chinese_scripts"] == ["hans", "hant"]
+    result = classify([VIDEO, track("zh-Hant"), track("und", Title="简中")], path, set(), {})
+    assert result["chinese_scripts"] == ["hans", "hant"]
+    result = classify([VIDEO, track("chi", IsForced=True, Title="Simplified"),
+                       track("zh-Hant", IsExternal=True), track("chi"), track("eng", Title="Traditional")], path, set(), {})
+    assert result["chinese"] == ["embedded", "external"] and result["chinese_scripts"] == []
 
 
 def test_unknown_tracks_and_unindexed_sidecars(tmp_path):

@@ -603,7 +603,11 @@ function badges(row) {
   const source = job?.report?.source || '';
   const files = job?.report?.files || [];
   if (row.original) result.push(['原盘', 'secondary']);
-  if (row.chinese.includes('embedded') || /内封|内嵌/.test(source)) result.push(['视频内嵌字幕', 'info']);
+  const scripts = row.chinese_scripts ?? [];
+  if (scripts.includes('hans')) result.push(['内嵌简中', 'var(--embedded-chinese-color)']);
+  if (scripts.includes('hant')) result.push(['内嵌繁中', 'var(--embedded-chinese-color)']);
+  if (!scripts.length && (row.chinese.includes('embedded') || /内封|内嵌/.test(source)))
+    result.push(['视频内嵌字幕', 'info']);
   if (row.chinese.includes('external')) result.push(['外挂中文', 'success']);
   if (job?.state === 'done' && (files.some(f => f.endsWith('.zh-en.ai.ass')) && files.some(f => f.endsWith('.zh-en.ai.srt'))
       || /生成双语 ASS 和 SRT/.test(job.detail))) result.push(['已生成双语 ASS 和 SRT', 'success']);
@@ -1135,6 +1139,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9ca3111b"]]);
+const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-dc7b04f4"]]);
 
 export { Page as default };

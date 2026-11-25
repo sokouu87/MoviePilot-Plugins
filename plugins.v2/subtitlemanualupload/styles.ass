@@ -8,10 +8,10 @@ PlayResY: 1080
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,PingFang SC,48,&H00FFFFFF,&H000000FF,&H26472A0E,&HA6000000,0,0,0,0,100,100,0.5,0,1,1.5,0.6,2,90,90,36,1
-Style: Eng,Helvetica,30,&H0062D8FF,&H000000FF,&H2E2D190A,&HB3000000,0,0,0,0,100,100,0.3,0,1,1.1,0.5,2,90,90,36,1
-Style: Note,PingFang SC,30,&H08B5EFFF,&H000000FF,&H33472A0E,&HB3000000,0,0,0,0,100,100,0.4,0,1,1.1,0.5,8,100,100,32,1
-Style: Sign,PingFang SC,36,&H00FFFFFF,&H000000FF,&H262D190A,&HA6000000,-1,0,0,0,100,100,0.8,0,1,1.4,0.5,8,100,100,78,1
+Style: Default,PingFang SC,64.8,&H00FFFFFF,&H000000FF,&H26472A0E,&HA6000000,0,0,0,0,100,100,0.5,0,1,1.5,0.6,2,90,90,36,1
+Style: Eng,Helvetica,40.5,&H0062D8FF,&H000000FF,&H2E2D190A,&HB3000000,0,0,0,0,100,100,0.3,0,1,1.1,0.5,2,90,90,36,1
+Style: Note,PingFang SC,40.5,&H08B5EFFF,&H000000FF,&H33472A0E,&HB3000000,0,0,0,0,100,100,0.4,0,1,1.1,0.5,8,100,100,32,1
+Style: Sign,PingFang SC,48.6,&H00FFFFFF,&H000000FF,&H262D190A,&HA6000000,-1,0,0,0,100,100,0.8,0,1,1.4,0.5,8,100,100,78,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

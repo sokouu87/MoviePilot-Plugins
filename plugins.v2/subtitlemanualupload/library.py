@@ -93,7 +93,7 @@ def entry(row, roots, mappings):
                  "episode": row["episode"], "series_id": str(row["series_id"] or "")},
         "original": original, "folder": row.get("disk_folder", False), "added": row["added"],
         "status": row["state"], "reason": row["reason"], "chinese": row["chinese"],
-        "bilingual": row["bilingual"], "english": row["english"], "emby": True,
+        "chinese_scripts": row.get("chinese_scripts", []), "bilingual": row["bilingual"], "english": row["english"], "emby": True,
     }
 
 
@@ -107,6 +107,7 @@ def original_entry(members, raw, roots, mappings):
     clips = disc.main_playlist(path) if mounted(path, root) else []
     primary = ""
     state, chinese, bilingual = "unknown", [], False
+    chinese_scripts = []
     reason = "主片字幕待确认，可上传到原盘目录"
     streams = set()
     if clips:
@@ -130,12 +131,14 @@ def original_entry(members, raw, roots, mappings):
                     reason = "Emby 已识别主片的中文外挂" if "external" in coverage["chinese"] else "Emby 已识别主片的中文内嵌轨"
                     chinese = sorted(set(chinese) | set(coverage["chinese"]))
                     bilingual = coverage["bilingual"]
+                    chinese_scripts = coverage.get("chinese_scripts", [])
     elif options and (len(options) == 1 or options[0]["seconds"] >= options[1]["seconds"] * 1.45):
         first = options[0]
         primary, _ = location(first["path"], roots, mappings)
         info = first["disc_coverage"]
         if info["state"] == "present":
             state, chinese, bilingual = "present", info["chinese"], info["bilingual"]
+            chinese_scripts = info.get("chinese_scripts", [])
             reason = "Emby 已识别最长主片的中文轨"
         elif info["state"] == "missing":
             reason = "最长片段未识别中文，原盘主片字幕待确认"
@@ -146,7 +149,8 @@ def original_entry(members, raw, roots, mappings):
         "file": PurePosixPath(raw).name, "title": name, "alias": "", "kind": "Disc",
         "meta": {"title": title, "year": year, "season": None, "episode": None, "series_id": ""},
         "original": True, "folder": True, "primary": primary, "added": max(row["added"] for row in members),
-        "status": state, "reason": reason, "chinese": chinese, "bilingual": bilingual, "english": False, "emby": True,
+        "status": state, "reason": reason, "chinese": chinese, "chinese_scripts": chinese_scripts,
+        "bilingual": bilingual, "english": False, "emby": True,
     }
 
 
@@ -163,7 +167,7 @@ def catalog(rows, locations, mappings):
         media = original_entry(members, path, locations.get(server, []), mappings)
         existing = result.get(media["id"], {})
         if existing.get("status") == "present" and media["status"] != "present":
-            for field in ("status", "chinese", "bilingual", "reason"):
+            for field in ("status", "chinese", "chinese_scripts", "bilingual", "reason"):
                 media[field] = existing[field]
         result[media["id"]] = media
     return result

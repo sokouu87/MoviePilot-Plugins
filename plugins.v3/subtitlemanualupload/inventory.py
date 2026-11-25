@@ -13,13 +13,19 @@ from . import library
 TYPES = ("Movie", "Episode")
 STATES = ("present", "missing", "unknown", "disc")
 PAGE_SIZE = 100
+CATALOG_VERSION = 2
 TEXT_CODECS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
 SIDECARS = {".srt", ".ass", ".ssa", ".vtt", ".sup", ".idx", ".smi", ".ttml"}
 UNKNOWN = {"", "und", "unk", "unknown", "mul", "mis", "zxx"}
-ZH = re.compile(r"(?<![a-z0-9])(?:zh|chi|zho|chs|cht|cmn|yue|chinese)(?![a-z0-9])|中文|汉语|漢語|简体|簡體|繁体|繁體", re.I)
+ZH = re.compile(r"(?<![a-z0-9])(?:zh|chi|zho|chs|cht|cmn|yue|chinese)(?![a-z0-9])|中文|汉语|漢語|简体|簡體|繁体|繁體|简中|簡中|繁中", re.I)
 EN = re.compile(r"(?<![a-z0-9])(?:en|eng|english)(?![a-z0-9])|英文|英语|英語", re.I)
 BILINGUAL = re.compile(r"中英|英中|简英|繁英|英简|英繁|簡英|英簡|中上英下|英上中下|上中下英|上英下中")
 RESTRICTED = re.compile(r"强制|強制|导演评[论述]|導演評[論述]|(?<![a-z])signs?(?![a-z])", re.I)
+
+CHINESE_SCRIPTS = {
+    "hans": re.compile(r"(?<![a-z0-9])(?:zh[-_]hans|chs|simplified)(?![a-z0-9])|简体|簡體|简中|簡中", re.I),
+    "hant": re.compile(r"(?<![a-z0-9])(?:zh[-_]hant|cht|traditional)(?![a-z0-9])|繁体|繁體|繁中", re.I),
+}
 
 
 def configured_servers():
@@ -123,8 +129,8 @@ def unindexed_sidecar(video, indexed, directories):
 def classify(streams, video, local_paths, directories):
     folders = {part.casefold() for part in PurePosixPath(video.replace("\\", "/")).parts[:-1]}
     if folders & {"bdmv", "video_ts"}:
-        return {"state": "disc", "reason": "原盘目录内部文件", "english": False, "bilingual": False, "chinese": []}
-    chinese = set()
+        return {"state": "disc", "reason": "原盘目录内部文件", "english": False, "bilingual": False, "chinese": [], "chinese_scripts": []}
+    chinese, chinese_scripts = set(), set()
     english = bilingual = unlabeled = forced_chinese = False
     external = set()
     for track in streams:
@@ -139,6 +145,11 @@ def classify(streams, video, local_paths, directories):
         if language in ("zh", "bilingual"):
             chinese.add("external" if track.get("IsExternal") else "embedded")
             bilingual |= language == "bilingual"
+            if not track.get("IsExternal"):
+                tags = " ".join(str(track.get(key) or "") for key in ("Language", "Title", "DisplayTitle"))
+                scripts = [key for key, pattern in CHINESE_SCRIPTS.items() if pattern.search(tags)]
+                if len(scripts) == 1:
+                    chinese_scripts.add(scripts[0])
         elif language == "en":
             english |= str(track.get("Codec") or "").lower() in TEXT_CODECS
         elif language == "unknown":
@@ -153,7 +164,8 @@ def classify(streams, video, local_paths, directories):
         state, reason = "unknown", "Emby 未提供完整轨道信息"
     else:
         state, reason = "missing", "只有强制或附注中文" if forced_chinese else "未发现完整中文字幕"
-    return {"state": state, "reason": reason, "english": english, "bilingual": bilingual, "chinese": sorted(chinese)}
+    return {"state": state, "reason": reason, "english": english, "bilingual": bilingual,
+            "chinese": sorted(chinese), "chinese_scripts": sorted(chinese_scripts)}
 
 
 def item_versions(item, server, local_paths, directories):
@@ -230,7 +242,7 @@ def scan(servers, local_paths, progress, stopped, mappings=""):
                              r["season"] or 0, r["episode"] or 0, r["title"].casefold(), r["file"]))
     progress("正在核对原盘主播放列表")
     return {"created": datetime.now(timezone.utc).isoformat(timespec="seconds"), "servers": [name for name, _ in servers],
-            "summary": summarize(rows), "rows": rows, "mapping": mappings,
+            "summary": summarize(rows), "rows": rows, "mapping": mappings, "catalog_version": CATALOG_VERSION,
             "catalog": library.catalog(rows, locations, path_maps)}
 
 
