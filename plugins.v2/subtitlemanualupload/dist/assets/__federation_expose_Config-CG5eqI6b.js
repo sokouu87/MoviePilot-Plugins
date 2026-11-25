@@ -34,7 +34,7 @@ return (_ctx, _cache) => {
 
   return (_openBlock(), _createElementBlock("form", {
     class: "options",
-    onSubmit: _cache[11] || (_cache[11] = _withModifiers($event => (emit('save', {...data.value})), ["prevent"]))
+    onSubmit: _cache[11] || (_cache[11] = _withModifiers($event => (emit('save', {...data.value, auto_search_on_transfer: data.value.auto_translate})), ["prevent"]))
   }, [
     _cache[25] || (_cache[25] = _createElementVNode("h3", null, "海拉鲁 AI 字幕设置", -1)),
     _createElementVNode("label", null, [
@@ -181,6 +181,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-3cc7debe"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-47d2951e"]]);
 
 export { Config as default };

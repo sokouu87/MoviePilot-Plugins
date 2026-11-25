@@ -198,24 +198,29 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
         <h2>海拉鲁 AI 字幕</h2>
         <p v-if="data.model">{{ data.model }} · {{ data.effort }}</p>
       </div>
+      <div class="search">
+        <input v-model="query" type="search" autocomplete="off" aria-label="搜索最近入库和 Emby 片库" placeholder="搜索片库">
+        <select v-model="kind" aria-label="筛选媒体类型" @change="select(filter)">
+          <option value="all">全部类型</option><option value="Movie">电影</option><option value="Episode">剧集</option>
+        </select>
+      </div>
       <div class="tools">
-        <VBtn size="small" color="primary" variant="tonal" :disabled="busy" @click="select(filter, order === 'desc' ? 'asc' : 'desc')">
-          {{ order === 'desc' ? '最新在前' : '最早在前' }}
+        <VBtn class="toolbar-action" size="small" color="primary" variant="tonal" :disabled="busy"
+              :aria-label="order === 'desc' ? '最新在前' : '最早在前'" :title="order === 'desc' ? '最新在前' : '最早在前'"
+              @click="select(filter, order === 'desc' ? 'asc' : 'desc')">
+          <VIcon :icon="order === 'desc' ? 'mdi-sort-calendar-descending' : 'mdi-sort-calendar-ascending'" />
+          <span class="tool-label">{{ order === 'desc' ? '最新在前' : '最早在前' }}</span>
         </VBtn>
-        <VBtn size="small" color="primary" variant="tonal" :disabled="busy || data.scanning" @click="refresh">刷新片库</VBtn>
+        <VBtn class="toolbar-action" size="small" color="primary" variant="tonal" :disabled="busy || data.scanning"
+              aria-label="刷新片库" title="刷新片库" @click="refresh">
+          <VIcon icon="mdi-refresh" /><span class="tool-label">刷新片库</span>
+        </VBtn>
         <VBtn v-if="show_switch" icon="mdi-cog-outline" size="small" variant="text" aria-label="插件设置" @click="emit('switch')" />
         <VBtn v-if="show_close" icon="mdi-close" size="small" variant="text" aria-label="关闭" @click="emit('close')" />
       </div>
     </header>
 
     <main class="content">
-      <div class="search">
-        <input v-model="query" type="search" autocomplete="off" aria-label="搜索最近入库和 Emby 片库" placeholder="搜索最近入库和 Emby 片库">
-        <select v-model="kind" aria-label="筛选媒体类型" @change="select(filter)">
-          <option value="all">全部类型</option><option value="Movie">电影</option><option value="Episode">剧集</option>
-        </select>
-        <span v-if="query.trim()">{{ data.matches }} 个结果</span>
-      </div>
       <nav class="filters" aria-label="筛选片源和任务">
         <VChip v-for="([label, color], state) in filters" :key="state" tag="button" type="button" size="small" :color="color"
                :variant="filter === state ? 'flat' : 'tonal'" :aria-pressed="filter === state" @click="select(state)">
@@ -262,6 +267,9 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
             <details v-if="row.task">
               <summary>任务 #{{ row.task.id }} · 字幕与审校记录</summary>
               <p v-if="row.task.report.source">{{ row.task.report.source }}</p>
+              <p v-if="row.task.report.translation_mode === 'embedded_chinese'">
+                英文复用 {{ row.task.report.existing_english || 0 }} 条 · AI 补齐 {{ row.task.report.generated_english || 0 }} 条
+              </p>
               <p v-if="row.task.created">{{ when(row.task.created, true) }}<template v-if="row.task.finished"> · 完成 {{ when(row.task.finished, true) }}</template></p>
               <p v-for="file in row.task.report.files" :key="file">{{ file }}</p>
               <p v-for="(issues,id) in row.task.report.warnings" :key="id">第 {{ id }} 轴 · {{ issues.join('、') }}</p>
@@ -333,34 +341,37 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
   z-index: 2;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
   gap: 8px;
   padding: 8px 14px;
   border-bottom: 1px solid var(--line);
   background: var(--paper);
 }
-.heading h2 { margin: 0; font-size: 20px; line-height: 1.35; }
+.heading { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+.heading h2 { margin: 0; font-size: 17px; }
 .heading p { margin: 0; color: var(--muted); font-size: 12px; }
-.tools, .search, .filters, .batch, .badges, .title, .actions, .meta, .pages {
+.filters, .batch, .badges, .title, .actions, .meta, .pages {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 7px;
 }
 .content { padding: 16px; }
-.search { margin-bottom: 12px; }
-.search input { flex: 1 1 18rem; }
+.tools, .search { display: flex; align-items: center; gap: 6px; }
+.search { flex: 1; min-width: 0; }
+.search input { flex: 1; }
 .search input, .search select {
   min-width: 0;
-  padding: .62rem .86rem;
+  min-height: 38px;
+  padding: .35rem .6rem;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--paper);
   color: inherit;
   font: inherit;
 }
-.search span, .pages span { color: var(--muted); font-size: 13px; }
+.search select { appearance: auto; }
+.tool-label { margin-inline-start: 4px; }
+.pages span { color: var(--muted); font-size: 13px; }
 .filters { margin-bottom: 12px; }
 .batch { margin: 0 0 8px; }
 .cards { display: grid; gap: 10px; }
@@ -389,7 +400,12 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
 .pages { justify-content: center; margin-top: 14px; }
 .empty { text-align: center; padding: 24px; }
 @media (max-width: 800px) {
-  .toolbar { position: static; }
+  .toolbar { position: static; padding: 7px 8px; gap: 4px; }
+  .toolbar .heading { display: none; }
+  .tools, .search { gap: 4px; }
+  .search select { max-width: 6em; padding-inline: .25rem; }
+  .toolbar-action { min-width: 38px; padding-inline: 0; }
+  .tool-label { display: none; }
   .content { padding: 10px; }
   .task { grid-template-columns: 22px minmax(0, 1fr); gap: 6px; padding: 10px; }
   .task .actions { grid-column: 2; justify-content: flex-start; }

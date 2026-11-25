@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,7 +13,8 @@ from urllib.parse import quote
 import httpx
 from filelock import FileLock, Timeout
 
-from .media import VIDEO, metadata, source_cues
+from .bilingual import combine
+from .media import VIDEO, embedded_chinese, english_subtitles, metadata, probe_streams, source_cues
 from .subtitles import MAX_SUBTITLE, parse, render, save_json, upload_member, write_file
 from .translation import DEFAULT_BANNED, read_state, translate, validated_glossary
 from . import disc, task_history
@@ -230,7 +232,7 @@ class Studio:
         if not manifest.is_file():
             if any(p.exists() or p.is_symlink() for p in out):
                 return "skipped", "已有同名 AI 字幕，可在查看数据中重新生成独立版本", {}
-            progress("选择英文原稿")
+            progress("选择字幕原稿")
             with self.db() as conn:
                 picked = conn.execute("SELECT extension FROM manuscript WHERE target=?", (key,)).fetchone()
             extensions = [picked[0]] if picked else [".srt", ".ass", ".ssa"]
@@ -238,24 +240,48 @@ class Studio:
                            if (f := video.with_name(video.stem + ".eng.manual" + ext)).is_file() and not f.is_symlink()), None)
             if picked and not manual:
                 raise ValueError("选用的人工英文稿已被移动，请重新上传")
+            english = None
             if manual:
                 if manual.stat().st_size > MAX_SUBTITLE:
                     raise ValueError("英文原稿超过 12 MiB")
-                cues, source = parse(manual.read_bytes(), manual.suffix), "人工英文稿 · " + manual.name
+                english = parse(manual.read_bytes(), manual.suffix), "人工英文稿 · " + manual.name
+            try:
+                streams = probe_streams(video)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                english = english or english_subtitles(video, [])
+                if not english:
+                    raise
+                streams = []
+            chinese = embedded_chinese(video, streams)
+            model = self.config["model"] + "/" + self.config["effort"]
+            if chinese:
+                cues, script, source = chinese
+                english = english or english_subtitles(video, streams)
+                report = {"source": source, "cues": len(cues), "translation_mode": "embedded_chinese"}
+                if english:
+                    report["english_source"] = english[1]
+                with self.db() as conn:
+                    conn.execute("UPDATE job SET report=? WHERE id=?", (json.dumps(report, ensure_ascii=False), number))
+                cues, items, stats = combine(cues, script, english[0] if english else [], meta, self.ask,
+                                             workspace / "english-checkpoint.json", model=model, progress=progress)
+                baseline = glossary = None
+                report.update(stats, cues=len(cues))
+                if stats["generated_english"]:
+                    report["model"] = self.config["model"]
             else:
-                cues, source = source_cues(video, self.config["whisper"], progress)
-            report = {"source": source, "model": self.config["model"], "cues": len(cues)}
-            with self.db() as conn:
-                conn.execute("UPDATE job SET report=? WHERE id=?", (json.dumps(report, ensure_ascii=False), number))
-            glossary_path = self.glossary_path(meta)
-            baseline = validated_glossary(read_state(glossary_path, EMPTY))
-            banned = [w.strip() for w in re.split(r"[,，、\n]", self.config.get("banned", DEFAULT_BANNED)) if w.strip()]
-            items, glossary, report = translate(cues, meta, baseline, self.ask, workspace / "checkpoint.json",
-                                               model=self.config["model"] + "/" + self.config["effort"], banned=banned, progress=progress)
+                cues, source = english or source_cues(video, self.config["whisper"], progress, streams=streams)
+                report = {"source": source, "model": self.config["model"], "cues": len(cues)}
+                with self.db() as conn:
+                    conn.execute("UPDATE job SET report=? WHERE id=?", (json.dumps(report, ensure_ascii=False), number))
+                baseline = validated_glossary(read_state(self.glossary_path(meta), EMPTY))
+                banned = [w.strip() for w in re.split(r"[,，、\n]", self.config.get("banned", DEFAULT_BANNED)) if w.strip()]
+                items, glossary, checks = translate(cues, meta, baseline, self.ask, workspace / "checkpoint.json",
+                                                    model=model, banned=banned, progress=progress)
+                report.update(checks)
             progress("校验双语字幕并写入")
             for ext, data in zip(("ass", "srt"), render(cues, items)):
                 write_file(workspace / ("result." + ext), data, replace=True)
-            report.update(source=source, model=self.config["model"], cues=len(cues), files=[p.name for p in out])
+            report["files"] = [p.name for p in out]
             save_json(manifest, {"report": report, "baseline": baseline, "glossary": glossary, "meta": meta})
 
         bundle = read_state(manifest, {})
@@ -271,7 +297,8 @@ class Studio:
             except FileExistsError:
                 if target.is_symlink() or target.read_bytes() != data:
                     raise ValueError("目标同名文件已变化，保留已有文件，请核对后重试")
-        self.set_glossary(bundle["meta"], bundle["glossary"], baseline=bundle["baseline"])
+        if bundle["glossary"] is not None:
+            self.set_glossary(bundle["meta"], bundle["glossary"], baseline=bundle["baseline"])
         return "done", "已生成双语 ASS 和 SRT", bundle["report"]
 
     def set_glossary(self, meta, value, baseline=None):

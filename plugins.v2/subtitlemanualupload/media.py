@@ -1,4 +1,4 @@
-"""从已知的本地媒体选择英文原稿。STRM 只处理旁挂字幕。"""
+"""读取本地媒体的字幕与英文音轨。STRM 只处理旁挂字幕。"""
 import json
 import re
 import subprocess
@@ -9,7 +9,13 @@ from .subtitles import Cue, MAX_SUBTITLE, TEXT_EXTS, parse
 
 VIDEO = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".ts", ".m2ts", ".mpg", ".mpeg", ".wmv", ".webm", ".iso", ".strm"}
 ENGLISH = {"eng", "en", "english"}
-LIMITED = re.compile(r"forced|commentary|director.s comment|signs[\s&_-]*(?:and[\s_-]*)?songs|外语部分|导演评论", re.I)
+TEXT_CODECS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
+CHINESE_LABEL = re.compile(r"(?<![a-z0-9])(?:zh|chi|zho|chs|cht|cmn|yue|chinese)(?![a-z0-9])|中文|汉语|漢語|简体|簡體|繁体|繁體|简中|簡中|繁中", re.I)
+CHINESE_SCRIPTS = {
+    "hans": re.compile(r"(?<![a-z0-9])(?:zh[-_]hans|chs|simplified)(?![a-z0-9])|简体|簡體|简中|簡中", re.I),
+    "hant": re.compile(r"(?<![a-z0-9])(?:zh[-_]hant|cht|traditional)(?![a-z0-9])|繁体|繁體|繁中", re.I),
+}
+LIMITED = re.compile(r"forced|commentary|director.s comment|signs[\s&_-]*(?:and[\s_-]*)?songs|外语部分|导演评论|導演評論|强制|強制", re.I)
 EPISODE = re.compile(r"(?i)(?<![a-z0-9])s(\d{1,3})[ ._-]*e(\d{1,4})")
 
 
@@ -30,7 +36,61 @@ def english_text(cues):
     return bool(re.search(r"(?i)\b(the|i|you|i'm|we|yes|no|hello|this|that|of|and|to|is|are|it's|don't|what|please|thanks|hi|bye|okay)\b", sample))
 
 
-def source_cues(video, model_path, progress):
+def probe_streams(video):
+    if video.suffix.lower() == ".strm":
+        return []
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(video)],
+                           capture_output=True, timeout=90, check=True)
+    return json.loads(probe.stdout).get("streams", [])
+
+
+def language(track):
+    return re.split("[-_]", str((track.get("tags") or {}).get("language") or "und").lower(), maxsplit=1)[0]
+
+
+def chinese_script(labels):
+    matches = [key for key, pattern in CHINESE_SCRIPTS.items() if pattern.search(labels)]
+    return matches[0] if len(matches) == 1 else ""
+
+
+def text_tracks(streams):
+    return [
+        track for track in streams if track.get("codec_type") == "subtitle" and track.get("codec_name") in TEXT_CODECS
+        and not any((track.get("disposition") or {}).get(k) for k in ("forced", "comment", "hearing_impaired_only"))
+        and not LIMITED.search((track.get("tags") or {}).get("title", ""))
+    ]
+
+
+def extract_track(video, track):
+    result = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-map", f"0:{track['index']}",
+                             "-f", "srt", "-"], capture_output=True, timeout=300)
+    if result.returncode or not result.stdout:
+        return []
+    try:
+        return parse(result.stdout, ".srt")
+    except ValueError:
+        return []
+
+
+def embedded_chinese(video, streams):
+    candidates = []
+    for track in text_tracks(streams):
+        tags = track.get("tags") or {}
+        title = tags.get("title") or ""
+        lang = language(track)
+        if CHINESE_LABEL.search(lang) or (lang in ("und", "unk", "mul") and CHINESE_LABEL.search(title)):
+            script = chinese_script(f"{tags.get('language', '')} {title}")
+            rank = {"hans": 0, "hant": 1, "": 2}[script]
+            candidates.append((rank, bool(track.get("disposition", {}).get("hearing_impaired")), track["index"], script, track))
+    for _, _, index, script, track in sorted(candidates):
+        cues = extract_track(video, track)
+        if any(re.search(r"[\u3400-\u9fff]", cue.raw) for cue in cues):
+            label = {"hans": "简中", "hant": "繁中", "": "中文"}[script]
+            return cues, script, f"内封{label}轨 #{index}"
+    return None
+
+
+def english_subtitles(video, streams):
     prefix = video.stem.casefold()
     candidates = []
     for file in video.parent.iterdir():
@@ -54,31 +114,30 @@ def source_cues(video, model_path, progress):
         if english_text(rows) or (set(re.split(r"[._ -]", file.stem[len(video.stem):].lower())) & ENGLISH and
                                   not re.search(r"[\u3400-\u9fff]", "".join(c.en for c in rows)[:6000])):
             return rows, "英文外挂 · " + file.name
-    if video.suffix.lower() == ".strm":
-        raise ValueError("STRM 未找到英文外挂，请选中本集并上传英文原稿")
-    probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(video)],
-                           capture_output=True, timeout=90, check=True)
-    streams = json.loads(probe.stdout).get("streams", [])
-    tracks = [s for s in streams if s.get("codec_type") == "subtitle"
-              and s.get("codec_name") in {"subrip", "ass", "ssa", "mov_text", "webvtt", "text"}
-              and not any((s.get("disposition") or {}).get(k) for k in ("forced", "comment", "hearing_impaired_only"))
-              and not LIMITED.search((s.get("tags") or {}).get("title", ""))]
-    def language(s):
-        return (s.get("tags") or {}).get("language", "und").lower().split("-")[0]
-    for track in sorted(tracks, key=lambda s: (language(s) not in ENGLISH, not s.get("disposition", {}).get("default"))):
+    for track in sorted(text_tracks(streams), key=lambda s: (language(s) not in ENGLISH, not s.get("disposition", {}).get("default"))):
         lang = language(track)
         if lang not in ENGLISH | {"und", ""}:
             continue
-        result = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-map", f"0:{track['index']}",
-                                 "-f", "srt", "-"], capture_output=True, timeout=300)
-        if result.returncode or not result.stdout:
-            continue
-        try:
-            rows = parse(result.stdout, ".srt")
-        except ValueError:
-            continue
-        if lang in ENGLISH or english_text(rows):
+        rows = extract_track(video, track)
+        if rows and (lang in ENGLISH or english_text(rows)):
             return rows, f"内封英文轨 #{track['index']}"
+    return None
+
+
+def source_cues(video, model_path, progress, *, streams=None):
+    if streams is None:
+        try:
+            streams = probe_streams(video)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            subtitles = english_subtitles(video, [])
+            if subtitles:
+                return subtitles
+            raise
+    subtitles = english_subtitles(video, streams)
+    if subtitles:
+        return subtitles
+    if video.suffix.lower() == ".strm":
+        raise ValueError("STRM 未找到英文外挂，请选中本集并上传英文原稿")
     audio = [s for s in streams if s.get("codec_type") == "audio" and not LIMITED.search((s.get("tags") or {}).get("title", ""))]
     audio.sort(key=lambda s: (language(s) not in ENGLISH, not s.get("disposition", {}).get("default")))
     if not audio or language(audio[0]) not in ENGLISH | {"und", ""}:

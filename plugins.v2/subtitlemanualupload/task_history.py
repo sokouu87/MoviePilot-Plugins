@@ -106,7 +106,8 @@ def page(conn, state="all", order="desc", offset=0, limit=100, native_only=False
     if target:
         cond.append("j.target=?")
         params.append(target)
-    counts = {r[0]: r[1] for r in conn.execute("SELECT j.state,COUNT(*) FROM job j WHERE " + " AND ".join(cond) + " GROUP BY j.state")}
+    counts = {r[0]: r[1] for r in conn.execute("SELECT j.state,COUNT(*) FROM job j WHERE " + " AND ".join(cond)
+                                             + " GROUP BY j.state", params)}
     if state != "all":
         cond.append("j.state=?")
         params.append(state)

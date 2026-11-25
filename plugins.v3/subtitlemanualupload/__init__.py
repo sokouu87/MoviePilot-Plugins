@@ -20,6 +20,7 @@ except ImportError:
     SessionFactory = None
 
 from .media import metadata
+from .mplite import MPLite, config_update
 from .studio import BRIDGE, EMPTY, MODEL, Studio
 from .subtitles import save_json
 from .translation import DEFAULT_BANNED, read_state
@@ -47,7 +48,7 @@ class SubtitleManualUpload(_PluginBase):
     plugin_name = "海拉鲁 AI 字幕"
     plugin_desc = "用 ChatGPT 订阅调研、精翻并审校双语字幕，支持前往 SubHD 官网下载后手动上传。"
     plugin_icon = "https://raw.githubusercontent.com/sokouu87/moviepilot-plugins/main/icons/hyrule-subtitle-master.png"
-    plugin_version = "2.3.2"
+    plugin_version = "2.4.0"
     plugin_author = "sokouu87"
     author_url = "https://github.com/sokouu87"
     plugin_config_prefix = "subtitlemanualupload_"
@@ -63,11 +64,16 @@ class SubtitleManualUpload(_PluginBase):
     def init_plugin(self, config=None):
         self.stop_service()
         original = config or {}
+        mobile_options = config_update(getattr(self, "_form_config", {}), original)
+        if mobile_options is not None:
+            original = mobile_options
+            self.update_config(original)
         current = {**DEFAULT, **{k: v for k, v in original.items() if k in DEFAULT}}
         current["auto_translate"] = original.get("auto_translate", original.get("auto_search_on_transfer", True))
         if "manual_dirs" not in original and original.get("manual_strm_enabled"):
             dirs = original.get("manual_strm_paths", "")
             current["manual_dirs"] = "\n".join(dirs) if isinstance(dirs, list) else str(dirs or "")
+        self._form_config = dict(current)
         self._config = current
         self._enabled = bool(current["enabled"])
         self._auto_search_on_transfer = self._enabled and bool(current["auto_translate"])
@@ -79,6 +85,7 @@ class SubtitleManualUpload(_PluginBase):
         self._inventory_progress = ""
         self._inventory_error = ""
         self._inventory_snapshot = {}
+        self._mplite = MPLite(self)
         if not self._enabled:
             return
         legacy = self.get_config("AutoSubv3") or {}
@@ -126,7 +133,8 @@ class SubtitleManualUpload(_PluginBase):
         return []
 
     def get_form(self):
-        return [], dict(DEFAULT)
+        current = getattr(self, "_form_config", DEFAULT)
+        return [], {**DEFAULT, "auto_search_on_transfer": current["auto_translate"]}
 
     def get_sidebar_nav(self):
         return ([{"nav_key": "main", "title": self.plugin_name, "icon": "mdi-subtitles-outline", "section": "organize",
@@ -248,6 +256,7 @@ class SubtitleManualUpload(_PluginBase):
                 studio.submit(key, automatic=True)
 
     def get_api(self):
+        mobile = self._mplite
         routes = [("/targets", self.targets, "GET"), ("/target", self.target, "GET"), ("/refresh", self.refresh, "POST"), ("/jobs", self.jobs, "GET"),
                   ("/translate", self.submit, "POST"), ("/retry", self.retry, "POST"), ("/upload", self.upload, "POST"),
                   ("/glossary", self.glossary, "GET"), ("/glossary", self.save_glossary, "POST"),
@@ -255,10 +264,19 @@ class SubtitleManualUpload(_PluginBase):
                   ("/task_actions", self.task_actions, "POST"),
                   ("/subtitle_inventory", self.subtitle_inventory, "GET"),
                   ("/inventory_scan", self.inventory_scan, "POST"),
-                  ("/library_page", self.library_page, "GET"), ("/library_target", self.library_target, "POST")]
+                  ("/library_page", self.library_page, "GET"), ("/library_target", self.library_target, "POST"),
+                  ("/status", mobile.status, "GET"), ("/online_status", mobile.online_status, "GET"),
+                  ("/auto_transfer_queue", mobile.auto_transfer_queue, "GET"), ("/refresh_index", mobile.refresh_index, "POST"),
+                  ("/search", mobile.search, "GET"), ("/match_history", mobile.match_history, "GET"),
+                  ("/online_manual_links", mobile.online_manual_links, "POST"), ("/online_search", mobile.online_search, "POST"),
+                  ("/ai_submit", mobile.ai_submit, "POST"), ("/ai_tasks", mobile.ai_tasks, "POST"),
+                  ("/ai_cancel", mobile.ai_cancel, "POST"), ("/timeline_tasks", mobile.timeline_tasks, "POST"),
+                  ("/prepare_upload", mobile.prepare_upload, "POST"), ("/apply_upload", mobile.apply_upload, "POST")]
         return [{"path": p, "endpoint": f, "methods": [m], "auth": "bear", "summary": f.__doc__ or self.plugin_name} for p, f, m in routes]
 
-    def targets(self, q: str = "", offset: int = 0):
+    def targets(self, q: str = "", offset: int = 0, media_type: str | None = None, title: str = ""):
+        if media_type is not None:
+            return self._mplite.targets(media_type, title)
         return {**self._active().targets(q[:240], max(0, offset)), "indexing": self._indexing, "error": self._index_error}
 
     def target(self, id: str):

@@ -7,25 +7,19 @@ import re
 
 import httpx
 
-from .media import LIMITED
+from .media import CHINESE_LABEL as ZH, LIMITED, TEXT_CODECS, chinese_script
 from . import library
 
 TYPES = ("Movie", "Episode")
 STATES = ("present", "missing", "unknown", "disc")
 PAGE_SIZE = 100
 CATALOG_VERSION = 2
-TEXT_CODECS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
 SIDECARS = {".srt", ".ass", ".ssa", ".vtt", ".sup", ".idx", ".smi", ".ttml"}
 UNKNOWN = {"", "und", "unk", "unknown", "mul", "mis", "zxx"}
-ZH = re.compile(r"(?<![a-z0-9])(?:zh|chi|zho|chs|cht|cmn|yue|chinese)(?![a-z0-9])|中文|汉语|漢語|简体|簡體|繁体|繁體|简中|簡中|繁中", re.I)
 EN = re.compile(r"(?<![a-z0-9])(?:en|eng|english)(?![a-z0-9])|英文|英语|英語", re.I)
 BILINGUAL = re.compile(r"中英|英中|简英|繁英|英简|英繁|簡英|英簡|中上英下|英上中下|上中下英|上英下中")
 RESTRICTED = re.compile(r"强制|強制|导演评[论述]|導演評[論述]|(?<![a-z])signs?(?![a-z])", re.I)
 
-CHINESE_SCRIPTS = {
-    "hans": re.compile(r"(?<![a-z0-9])(?:zh[-_]hans|chs|simplified)(?![a-z0-9])|简体|簡體|简中|簡中", re.I),
-    "hant": re.compile(r"(?<![a-z0-9])(?:zh[-_]hant|cht|traditional)(?![a-z0-9])|繁体|繁體|繁中", re.I),
-}
 
 
 def configured_servers():
@@ -147,9 +141,9 @@ def classify(streams, video, local_paths, directories):
             bilingual |= language == "bilingual"
             if not track.get("IsExternal"):
                 tags = " ".join(str(track.get(key) or "") for key in ("Language", "Title", "DisplayTitle"))
-                scripts = [key for key, pattern in CHINESE_SCRIPTS.items() if pattern.search(tags)]
-                if len(scripts) == 1:
-                    chinese_scripts.add(scripts[0])
+                script = chinese_script(tags)
+                if script:
+                    chinese_scripts.add(script)
         elif language == "en":
             english |= str(track.get("Codec") or "").lower() in TEXT_CODECS
         elif language == "unknown":

@@ -14,7 +14,7 @@ watch(()=>props.initialConfig, (value)=>{
 },{immediate:true})
 </script>
 <template>
- <form class="options" @submit.prevent="emit('save', {...data})">
+ <form class="options" @submit.prevent="emit('save', {...data, auto_search_on_transfer: data.auto_translate})">
   <h3>海拉鲁 AI 字幕设置</h3>
   <label><input v-model="data.enabled" type="checkbox"> 启用插件</label>
   <label><input v-model="data.auto_translate" type="checkbox"> 入库后自动翻译</label>
