@@ -7,6 +7,8 @@ const props = defineProps({
   pluginId: { type: String, default: 'SubtitleManualUpload' },
   show_switch: { type: Boolean, default: true },
   show_close: { type: Boolean, default: true },
+  compact: Boolean,
+  allowRefresh: { type: Boolean, default: true },
 })
 const emit = defineEmits(['close', 'switch'])
 const filters = {
@@ -21,12 +23,15 @@ const actions = {
   delete: { label: '删除', color: 'error', result: '已删除任务记录' },
 }
 const data = ref({ rows: [], counts: {}, matches: 0, page_size: 50 })
-const query = ref(''), filter = ref('all'), kind = ref('all'), order = ref('desc'), offset = ref(0)
+const query = ref(''), filter = ref(props.compact ? 'recent' : 'all')
+const kind = ref(props.compact ? 'Movie' : 'all'), order = ref('desc'), offset = ref(0)
 const selected = ref([]), pending = ref(null), upload = ref(null), history = ref(null)
 const loading = ref(false), busy = ref(false), loadError = ref(''), actionError = ref(''), notice = ref('')
 const selectable = computed(() => data.value.rows.filter(row => row.task).map(row => row.task.id))
 const picked = computed(() => data.value.rows.filter(row => row.task && selected.value.includes(row.task.id)))
 const allPicked = computed(() => selectable.value.length > 0 && selected.value.length === selectable.value.length)
+const visibleRows = computed(() => props.compact ? data.value.rows.slice(0, 3) : data.value.rows)
+const searchPage = computed(() => '#/plugin-app/' + encodeURIComponent(props.pluginId) + '/main')
 let requestNumber = 0
 let timer, debounce
 
@@ -185,15 +190,19 @@ watch(query, () => {
 onMounted(() => {
   load()
   timer = setInterval(() => {
-    if (!document.hidden && !busy.value && !loading.value && !pending.value && !upload.value && !history.value) load()
-  }, 7000)
+    if (props.allowRefresh && !document.hidden && !busy.value && !loading.value && !pending.value && !upload.value && !history.value) load()
+  }, props.compact ? 30000 : 7000)
 })
 onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debounce) })
 </script>
 
 <template>
-  <div class="records">
-    <header class="toolbar">
+  <div class="records" :class="{ compact }">
+    <header v-if="compact" class="dashboard-head">
+      <h2>海拉鲁 AI 字幕</h2>
+      <VBtn size="small" variant="text" color="primary" :href="searchPage" prepend-icon="mdi-magnify">搜索片库</VBtn>
+    </header>
+    <header v-else class="toolbar">
       <div class="heading">
         <h2>海拉鲁 AI 字幕</h2>
         <p v-if="data.model">{{ data.model }} · {{ data.effort }}</p>
@@ -220,14 +229,14 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
       </div>
     </header>
 
-    <main class="content">
-      <nav class="filters" aria-label="筛选片源和任务">
+    <component :is="compact ? 'div' : 'main'" class="content">
+      <nav v-if="!compact" class="filters" aria-label="筛选片源和任务">
         <VChip v-for="([label, color], state) in filters" :key="state" tag="button" type="button" size="small" :color="color"
                :variant="filter === state ? 'flat' : 'tonal'" :aria-pressed="filter === state" @click="select(state)">
           {{ label }} {{ data.counts[state] || 0 }}
         </VChip>
       </nav>
-      <div v-if="selectable.length" class="batch" role="group" aria-label="批量管理任务">
+      <div v-if="!compact && selectable.length" class="batch" role="group" aria-label="批量管理任务">
         <VBtn size="small" variant="text" :disabled="busy" @click="selected = allPicked ? [] : [...selectable]">
           {{ allPicked ? '取消全选' : '全选本页任务' }}
         </VBtn>
@@ -236,21 +245,22 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
                 :disabled="busy || !picked.some(row => can(action, row))" @click="request(action, picked)">批量{{ spec.label }}</VBtn>
         </template>
       </div>
-      <p v-if="data.scanning" class="feedback" role="status">{{ data.progress || '正在读取 Emby 片库…' }}</p>
+      <p v-if="!compact && data.scanning" class="feedback" role="status">{{ data.progress || '正在读取 Emby 片库…' }}</p>
       <p v-if="loadError || actionError" class="feedback error-text" role="alert">{{ actionError || loadError }}</p>
       <p v-if="notice" class="feedback" role="status">{{ notice }}</p>
-      <p v-if="!data.rows.length && !loadError" class="empty">{{ loading ? '正在读取…' : '当前筛选没有片源' }}</p>
+      <p v-if="!visibleRows.length && !loadError" class="empty">{{ loading ? '正在读取…' : compact ? '暂无最近入库电影' : '当前筛选没有片源' }}</p>
 
       <div class="cards">
-        <article v-for="row in data.rows" :key="row.id" class="task" :class="{ marked: selected.includes(row.task?.id) }">
-          <label class="pick"><input v-if="row.task" v-model="selected" type="checkbox" :value="row.task.id" :aria-label="'选择任务 ' + row.title"></label>
+        <article v-for="row in visibleRows" :key="row.id" class="task" :class="{ marked: selected.includes(row.task?.id) }">
+          <label v-if="!compact" class="pick"><input v-if="row.task" v-model="selected" type="checkbox" :value="row.task.id" :aria-label="'选择任务 ' + row.title"></label>
           <div class="body">
             <div class="title">
-              <strong>{{ row.title || row.file }}</strong>
-              <VChip v-if="row.task" size="x-small" variant="tonal" :color="filters[row.task.state]?.[1]">
+              <strong :title="compact ? row.title || row.file : undefined">{{ row.title || row.file }}</strong>
+              <VChip v-if="row.task" class="row-state" size="x-small" variant="tonal" :color="filters[row.task.state]?.[1]">
                 {{ row.task.cancelling ? '取消中' : filters[row.task.state]?.[0] }}
               </VChip>
             </div>
+            <template v-if="!compact">
             <div v-if="badges(row).length" class="badges">
               <VChip v-for="([label,color]) in badges(row)" :key="label" size="small" variant="tonal" :color="color">{{ label }}</VChip>
             </div>
@@ -279,22 +289,24 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
               </div>
               <VBtn v-if="row.task_count > 1" size="small" variant="text" @click="loadHistory(row)">历史任务 {{ row.task_count }}</VBtn>
             </details>
+            </template>
           </div>
           <div class="actions">
-            <VBtn size="small" variant="tonal" :href="row.search_url" target="_blank" rel="noopener noreferrer">SubHD ↗</VBtn>
-            <VBtn size="small" variant="tonal" color="primary" :disabled="busy" @click="upload = row">上传</VBtn>
-            <VBtn v-if="!row.original" size="small" variant="tonal" color="primary"
-                  :disabled="busy || !data.configured || !row.available || active(row.task)" @click="generate(row)">{{ aiLabel(row) }}</VBtn>
-            <VBtn v-if="can('cancel', row)" size="small" variant="text" color="warning" :disabled="busy" @click="request('cancel', [row])">取消</VBtn>
+            <VBtn class="quick-action" size="small" variant="tonal" :href="row.search_url" target="_blank" rel="noopener noreferrer">SubHD{{ compact ? '' : ' ↗' }}</VBtn>
+            <VBtn class="quick-action" size="small" variant="tonal" color="primary" :disabled="busy" @click="upload = row">上传</VBtn>
+            <VBtn v-if="!row.original" class="quick-action" size="small" variant="tonal" color="primary"
+                  :aria-label="aiLabel(row)" :title="compact ? aiLabel(row) : undefined"
+                  :disabled="busy || !data.configured || !row.available || active(row.task)" @click="generate(row)">{{ compact ? 'AI' : aiLabel(row) }}</VBtn>
+            <VBtn v-if="!compact && can('cancel', row)" size="small" variant="text" color="warning" :disabled="busy" @click="request('cancel', [row])">取消</VBtn>
           </div>
         </article>
       </div>
-      <nav v-if="offset || data.more" class="pages" aria-label="片源分页">
+      <nav v-if="!compact && (offset || data.more)" class="pages" aria-label="片源分页">
         <VBtn size="small" variant="tonal" :disabled="!offset || loading" @click="select(filter, order, offset - data.page_size)">上一页</VBtn>
         <span>第 {{ offset / data.page_size + 1 }} 页</span>
         <VBtn size="small" variant="tonal" :disabled="!data.more || loading" @click="select(filter, order, offset + data.page_size)">下一页</VBtn>
       </nav>
-    </main>
+    </component>
 
     <MediaDialog v-if="upload" :row="upload" :call="call" @close="upload = null" @changed="load" />
     <VDialog :model-value="Boolean(pending)" max-width="420" aria-labelledby="hyrule-confirm" @update:model-value="open => { if (!open) pending = null }">
@@ -410,4 +422,32 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
   .task { grid-template-columns: 22px minmax(0, 1fr); gap: 6px; padding: 10px; }
   .task .actions { grid-column: 2; justify-content: flex-start; }
 }
+.compact { min-height: auto; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; }
+.dashboard-head {
+  min-height: 36px;
+  padding: 0 8px 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.dashboard-head h2 { font-size: 14px; margin: 0; white-space: nowrap; }
+.compact .content { padding: 0 8px 4px; }
+.compact .cards { gap: 0; }
+.compact .task {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 4px;
+  border: 0;
+  border-radius: 0;
+  min-height: 36px;
+  gap: 4px;
+}
+.compact .task + .task { border-top: 1px solid var(--line); }
+.compact .title, .compact .actions { flex-wrap: nowrap; gap: 4px; }
+.compact .title strong { font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.compact .row-state { flex: none; }
+.compact .task .actions { grid-column: auto; justify-content: flex-end; }
+.compact .quick-action { min-width: 29px; min-height: 30px; padding-inline: 5px; font-size: 11px; }
+.compact .empty { padding: 10px; margin: 0; font-size: 13px; }
 </style>

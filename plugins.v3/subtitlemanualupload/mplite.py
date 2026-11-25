@@ -38,7 +38,7 @@ def config_update(previous, incoming):
 
 def media(row):
     return {"title": row["title"], "name": row["title"], "media_type": "tv" if row["kind"] == "Episode" else "movie",
-            "target_count": 1}
+            "target_count": 1, "text_only": True}
 
 
 def ids(body):
