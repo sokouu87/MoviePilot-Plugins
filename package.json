@@ -38,9 +38,9 @@
     },
     "SubtitleManualUpload": {
         "name": "海拉鲁 AI 字幕",
-        "description": "用 ChatGPT 订阅调研、精翻和审校中英字幕；支持前往 SubHD 官网下载后返回原影片手动上传。",
-        "labels": "字幕,AI翻译,ChatGPT,SubHD",
-        "version": "2.5.0",
+        "description": "用 ChatGPT 订阅精翻和审校中英字幕，支持通过 Emby 查找英文原稿。",
+        "labels": "字幕,AI翻译,ChatGPT,SubHD,Emby",
+        "version": "2.6.0",
         "icon": "https://raw.githubusercontent.com/sokouu87/moviepilot-plugins/main/icons/hyrule-subtitle-master.png",
         "author": "sokouu87",
         "author_url": "https://github.com/sokouu87",
@@ -49,6 +49,7 @@
         "v3": false,
         "release": true,
         "history": {
+            "v2.6.0": "AI 生成缺少本地原稿时可查找 Emby 英文 SRT，确认片源版本后下载并翻译。",
             "v2.5.0": "新增紧凑仪表盘，显示最近三部电影及 SubHD、上传、AI 生成和片库搜索。",
             "v2.4.0": "复用内封中文字幕，按需补英文；适配 MPLite 原生页面，将片库工具栏合并为一行。",
             "v2.3.2": "ASS 默认字号使用 135% 档，内嵌简中和繁中显示紫色标签。",

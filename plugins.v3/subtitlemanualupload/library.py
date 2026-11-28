@@ -242,7 +242,7 @@ def page(conn, snapshot, query, state, order, offset, kind="all"):
             "more": offset + PAGE_SIZE < len(found), "scanned": snapshot.get("created")}
 
 
-def prepare(studio, snapshot, key):
+def prepare(studio, snapshot, key, include_emby=False):
     with studio.db() as conn:
         row = merge(conn, snapshot).get(key)
     if not row or not row["path"]:
@@ -265,5 +265,11 @@ def prepare(studio, snapshot, key):
     media, _ = studio.target(target)
     if not os.access(media if media.is_dir() else media.parent, os.W_OK):
         raise ValueError("MoviePilot 对字幕保存目录没有写入权限")
-    return {"target": target, "directory": str(directory), "destination": str(media if media.is_dir() else media.parent),
-            "file": media.name, "folder": media.is_dir(), "original": row["original"]}
+    result = {"target": target, "directory": str(directory), "destination": str(media if media.is_dir() else media.parent),
+              "file": media.name, "folder": media.is_dir(), "original": row["original"]}
+    if include_emby and row["emby"] and row["display"] and not row["original"]:
+        sources = {(item["server"], item["item"]) for item in snapshot.get("rows", ())
+                   if item["path"] == row["display"] and item["server"] and item["item"]}
+        if len(sources) == 1:
+            result["emby_source"] = sources.pop()
+    return result

@@ -46,9 +46,9 @@ def series_identity(info):
 
 class SubtitleManualUpload(_PluginBase):
     plugin_name = "海拉鲁 AI 字幕"
-    plugin_desc = "用 ChatGPT 订阅调研、精翻并审校双语字幕，支持前往 SubHD 官网下载后手动上传。"
+    plugin_desc = "用 ChatGPT 订阅精翻并审校双语字幕，支持通过 Emby 查找英文原稿。"
     plugin_icon = "https://raw.githubusercontent.com/sokouu87/moviepilot-plugins/main/icons/hyrule-subtitle-master.png"
-    plugin_version = "2.5.0"
+    plugin_version = "2.6.0"
     plugin_author = "sokouu87"
     author_url = "https://github.com/sokouu87"
     plugin_config_prefix = "subtitlemanualupload_"
@@ -365,9 +365,12 @@ class SubtitleManualUpload(_PluginBase):
                 "model": studio.config["model"], "effort": studio.config["effort"]}
 
     def library_target(self, body: dict):
+        return self._prepare_library_target(str(body.get("id") or "")[:64])
+
+    def _prepare_library_target(self, ident, include_emby=False):
         studio = self._active()
         snap = self._inventory_snapshot if self._inventory_snapshot.get("mapping") == studio.config["emby_directory_map"] else {}
-        return self._check(library.prepare, studio, snap, str(body.get("id") or "")[:64])
+        return self._check(library.prepare, studio, snap, ident, include_emby)
 
     @staticmethod
     def _check(call, *args):

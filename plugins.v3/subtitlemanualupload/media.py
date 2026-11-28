@@ -4,6 +4,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+from time import monotonic
 
 from .subtitles import Cue, MAX_SUBTITLE, TEXT_EXTS, parse
 
@@ -36,11 +37,11 @@ def english_text(cues):
     return bool(re.search(r"(?i)\b(the|i|you|i'm|we|yes|no|hello|this|that|of|and|to|is|are|it's|don't|what|please|thanks|hi|bye|okay)\b", sample))
 
 
-def probe_streams(video):
+def probe_streams(video, *, timeout=90):
     if video.suffix.lower() == ".strm":
         return []
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(video)],
-                           capture_output=True, timeout=90, check=True)
+                           capture_output=True, timeout=timeout, check=True)
     return json.loads(probe.stdout).get("streams", [])
 
 
@@ -61,9 +62,9 @@ def text_tracks(streams):
     ]
 
 
-def extract_track(video, track):
+def extract_track(video, track, *, timeout=300):
     result = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-map", f"0:{track['index']}",
-                             "-f", "srt", "-"], capture_output=True, timeout=300)
+                             "-f", "srt", "-"], capture_output=True, timeout=timeout)
     if result.returncode or not result.stdout:
         return []
     try:
@@ -90,7 +91,7 @@ def embedded_chinese(video, streams):
     return None
 
 
-def english_subtitles(video, streams):
+def english_subtitles(video, streams, *, deadline=None):
     prefix = video.stem.casefold()
     candidates = []
     for file in video.parent.iterdir():
@@ -118,7 +119,8 @@ def english_subtitles(video, streams):
         lang = language(track)
         if lang not in ENGLISH | {"und", ""}:
             continue
-        rows = extract_track(video, track)
+        timeout = 300 if deadline is None else max(0.1, deadline - monotonic())
+        rows = extract_track(video, track, timeout=timeout)
         if rows and (lang in ENGLISH or english_text(rows)):
             return rows, f"内封英文轨 #{track['index']}"
     return None

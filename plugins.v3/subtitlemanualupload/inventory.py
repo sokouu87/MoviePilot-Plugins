@@ -44,6 +44,14 @@ def emby_url(host):
     return str(url).rstrip("/") + ("/" if url.path.lower().rstrip("/").endswith("/emby") else "/emby/")
 
 
+def emby_client(config, timeout=40):
+    key = config.get("apikey")
+    if not key:
+        raise ValueError("Emby 缺少 API 密钥")
+    return httpx.Client(base_url=emby_url(config.get("host")), headers={"X-Emby-Token": key},
+                        trust_env=False, timeout=timeout, transport=httpx.HTTPTransport(retries=1))
+
+
 def item_pages(client):
     start = 0
     total = None
@@ -218,11 +226,7 @@ def scan(servers, local_paths, progress, stopped, mappings=""):
     locations = {}
     path_maps = library.directory_maps(mappings)
     for server, config in servers:
-        key = config.get("apikey")
-        if not key:
-            raise ValueError("Emby 缺少 API 密钥")
-        with httpx.Client(base_url=emby_url(config.get("host")), headers={"X-Emby-Token": key},
-                          trust_env=False, timeout=40, transport=httpx.HTTPTransport(retries=1)) as client:
+        with emby_client(config) as client:
             folders = client.get("Library/VirtualFolders").raise_for_status().json()
             locations[server] = [path for folder in folders for path in folder.get("Locations", [])
                                  if library.emby_path(path) and path != "/"]

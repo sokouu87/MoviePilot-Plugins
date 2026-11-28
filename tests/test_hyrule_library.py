@@ -36,7 +36,7 @@ def emby(kind, key, path, title, *, source=None, **fields):
 def snapshot(root, *items):
     rows = [row for item in items for row in inventory.item_versions(item, "test", set(), {})]
     maps = library.directory_maps(f"/emby-media={root}")
-    return {"catalog": library.catalog(rows, {"test": ["/emby-media"]}, maps)}
+    return {"catalog": library.catalog(rows, {"test": ["/emby-media"]}, maps), "rows": rows}
 
 
 def test_reads_primary_playlist_languages_and_rejects_truncation():
@@ -69,6 +69,8 @@ def test_combines_recent_task_and_emby_with_one_search_result(tmp_path):
         assert library.page(conn, state, "", "all", "desc", 0, "Episode")["matches"] == 0
     before = library.prepare(studio, state, library.key_for(str(another)))
     assert studio.target(before["target"])[0] == another
+    assert "emby_source" not in before
+    assert library.prepare(studio, state, library.key_for(str(another)), True)["emby_source"] == ("test", "2")
 
 
 def test_disc_hides_failed_fragments_and_uploads_to_verified_primary(tmp_path):

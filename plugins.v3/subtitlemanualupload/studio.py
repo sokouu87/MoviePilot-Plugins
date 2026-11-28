@@ -8,13 +8,15 @@ import subprocess
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from time import monotonic
 from urllib.parse import quote
 
 import httpx
 from filelock import FileLock, Timeout
 
 from .bilingual import combine
-from .media import VIDEO, embedded_chinese, english_subtitles, metadata, probe_streams, source_cues
+from .media import (CHINESE_LABEL, ENGLISH, VIDEO, embedded_chinese, english_subtitles, language,
+                    metadata, probe_streams, source_cues, text_tracks)
 from .subtitles import MAX_SUBTITLE, parse, render, save_json, upload_member, write_file
 from .translation import DEFAULT_BANNED, read_state, translate, validated_glossary
 from . import disc, task_history
@@ -125,7 +127,7 @@ class Studio:
         label = " ".join(filter(None, (meta["title"], meta["year"], episode)))
         return {"id": key, "label": label, "file": path.name, "search_url": "https://subhd.tv/search/" + quote(label, safe=""), "meta": meta}
 
-    def submit(self, key, automatic=False):
+    def submit(self, key, automatic=False, online=None):
         video, meta = self.target(key)
         if disc.is_original(video) or meta.get("disc_folder"):
             raise ValueError("原盘请前往 SubHD 下载后手动上传")
@@ -138,7 +140,15 @@ class Studio:
                 last = conn.execute("SELECT id,state FROM job WHERE target=? AND hidden=0 AND legacy_id IS NULL ORDER BY id DESC LIMIT 1", (key,)).fetchone()
                 if last and (last["state"] in ("failed", "cancelled") or all(video.with_name(f"{video.stem}.zh-en.ai.{ext}").is_file() for ext in ("ass","srt"))):
                     return last["id"]
-            job = conn.execute("INSERT INTO job(target,state,origin) VALUES (?,'queued',?)", (key,"入库触发" if automatic else "手动提交")).lastrowid
+            if online is not None:
+                last = conn.execute("SELECT id FROM job WHERE target=? ORDER BY id DESC LIMIT 1", (key,)).fetchone()
+                rerun = last["id"] if last else None
+                job = conn.execute("INSERT INTO job(target,state,origin,rerun_of) VALUES (?,'queued','Emby 英文字幕',?)",
+                                   (key, rerun)).lastrowid
+                conn.execute("INSERT INTO online_manuscript(job,source,contents) VALUES (?,?,?)", (job, *online))
+            else:
+                job = conn.execute("INSERT INTO job(target,state,origin) VALUES (?,'queued',?)",
+                                   (key, "入库触发" if automatic else "手动提交")).lastrowid
         self.wake.set()
         return job
 
@@ -177,6 +187,40 @@ class Studio:
             with self.db() as conn:
                 conn.execute("INSERT OR REPLACE INTO manuscript(target,extension) VALUES (?,?)", (key, ext))
         return {"file": path.name, "cues": len(rows)}
+
+    def manual_source(self, video, key):
+        with self.db() as conn:
+            picked = conn.execute("SELECT extension FROM manuscript WHERE target=?", (key,)).fetchone()
+        extensions = [picked[0]] if picked else [".srt", ".ass", ".ssa"]
+        for ext in extensions:
+            path = video.with_name(video.stem + ".eng.manual" + ext)
+            if path.is_file() and not path.is_symlink():
+                if path.stat().st_size > MAX_SUBTITLE:
+                    raise ValueError("英文原稿超过 12 MiB")
+                return parse(path.read_bytes(), path.suffix), "人工英文稿 · " + path.name
+        if picked:
+            raise ValueError("选用的人工英文稿已被移动，请重新上传")
+        return None
+
+    def has_online_source(self, number):
+        with self.db() as conn:
+            return conn.execute("SELECT 1 FROM online_manuscript WHERE job=?", (number,)).fetchone() is not None
+
+    def has_local_source(self, key):
+        video, _ = self.target(key)
+        if self.manual_source(video, key) or english_subtitles(video, []):
+            return True
+        try:
+            tracks = text_tracks(probe_streams(video, timeout=8))
+            if any(language(track) in ENGLISH or CHINESE_LABEL.search(language(track))
+                   or (language(track) in ("und", "unk", "mul")
+                       and CHINESE_LABEL.search((track.get("tags") or {}).get("title") or ""))
+                   for track in tracks):
+                return True
+            unlabeled = [track for track in tracks if language(track) in ("und", "")]
+            return bool(unlabeled and english_subtitles(video, unlabeled, deadline=monotonic() + 6))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return False
 
     def ask(self, stage, instruction, data, schema, search):
         self.check_running()
@@ -234,24 +278,19 @@ class Studio:
                 return "skipped", "已有同名 AI 字幕，可在查看数据中重新生成独立版本", {}
             progress("选择字幕原稿")
             with self.db() as conn:
-                picked = conn.execute("SELECT extension FROM manuscript WHERE target=?", (key,)).fetchone()
-            extensions = [picked[0]] if picked else [".srt", ".ass", ".ssa"]
-            manual = next((f for ext in extensions
-                           if (f := video.with_name(video.stem + ".eng.manual" + ext)).is_file() and not f.is_symlink()), None)
-            if picked and not manual:
-                raise ValueError("选用的人工英文稿已被移动，请重新上传")
-            english = None
-            if manual:
-                if manual.stat().st_size > MAX_SUBTITLE:
-                    raise ValueError("英文原稿超过 12 MiB")
-                english = parse(manual.read_bytes(), manual.suffix), "人工英文稿 · " + manual.name
-            try:
-                streams = probe_streams(video)
-            except (OSError, ValueError, subprocess.SubprocessError):
-                english = english or english_subtitles(video, [])
-                if not english:
-                    raise
+                online = conn.execute("SELECT source,contents FROM online_manuscript WHERE job=?", (number,)).fetchone()
+            if online:
+                english = parse(online["contents"], ".srt"), online["source"]
                 streams = []
+            else:
+                english = self.manual_source(video, key)
+                try:
+                    streams = probe_streams(video)
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    english = english or english_subtitles(video, [])
+                    if not english:
+                        raise
+                    streams = []
             chinese = embedded_chinese(video, streams)
             model = self.config["model"] + "/" + self.config["effort"]
             if chinese:

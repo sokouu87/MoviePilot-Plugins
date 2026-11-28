@@ -1,12 +1,12 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import Page from './__federation_expose_Page-DypaP4I9.js';
+import Page from './__federation_expose_Page-CMgAoxvD.js';
 
 const {openBlock:_openBlock,createBlock:_createBlock} = await importShared('vue');
 
 
 const _sfc_main = {
-  __name: 'Dashboard',
-  props: { api: Object, config: Object, allowRefresh: { type: Boolean, default: true } },
+  __name: 'AppPage',
+  props: { api: Object, pluginId: { type: String, default: 'SubtitleManualUpload' } },
   setup(__props) {
 
 
@@ -14,12 +14,10 @@ const _sfc_main = {
 return (_ctx, _cache) => {
   return (_openBlock(), _createBlock(Page, {
     api: __props.api,
-    "plugin-id": __props.config?.id || 'SubtitleManualUpload',
-    "allow-refresh": __props.allowRefresh,
-    compact: "",
+    "plugin-id": __props.pluginId,
     show_switch: false,
     show_close: false
-  }, null, 8, ["api", "plugin-id", "allow-refresh"]))
+  }, null, 8, ["api", "plugin-id"]))
 }
 }
 

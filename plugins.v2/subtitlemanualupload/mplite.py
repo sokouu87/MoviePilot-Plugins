@@ -11,6 +11,7 @@ from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from . import task_history
+from .emby_subtitles import EmbySubtitles
 from .media import chinese_script, english_text
 from .subtitles import MAX_SUBTITLE, parse, upload_member
 
@@ -60,6 +61,7 @@ class MPLite:
         self.plugin = plugin
         self.lock = threading.Lock()
         self.previews = {}
+        self.emby_subtitles = EmbySubtitles()
 
     def status(self):
         studio = self.plugin._active()
@@ -137,19 +139,50 @@ class MPLite:
         studio = self.plugin._active()
         if not studio.key:
             raise HTTPException(409, "订阅线路未配置")
-        for ident in ids(body):
-            target = self.plugin.library_target({"id": ident})
+        selected = ids(body)
+        find_english = body.get("find_english") is True
+        choice = body.get("english_choice")
+        interactive = find_english or choice is not None
+        if interactive and len(selected) != 1:
+            raise HTTPException(422, "请选择一个片源来查找英文字幕")
+        source_notice = ""
+        for ident in selected:
+            target = (self.plugin._prepare_library_target(ident, True) if interactive
+                      else self.plugin.library_target({"id": ident}))
             if target["original"]:
                 raise HTTPException(422, "原盘请下载后手动上传字幕")
             key = target["target"]
             last = self._job(studio, key)
+            active = last and last["state"] in ("queued", "running")
+            source = target.get("emby_source")
+            if choice is not None:
+                if active:
+                    raise HTTPException(409, "此片源已有 AI 字幕任务")
+                online = self.plugin._check(self.emby_subtitles.download, key, source, choice)
+                self.plugin._check(studio.submit, key, False, online)
+                continue
+            if find_english and source and not active and not (last and studio.has_online_source(last["id"])):
+                if not self.plugin._check(studio.has_local_source, key):
+                    try:
+                        options = self.emby_subtitles.search(key, source, target["file"])
+                    except ValueError as exc:
+                        source_notice = str(exc)
+                    else:
+                        if options:
+                            return {"english_options": options}
+                        source_notice = "Emby 未找到英文 SRT"
+                    if str(target["file"]).lower().endswith(".strm"):
+                        raise HTTPException(422, source_notice + "，可上传英文原稿后再试")
             if last and last["state"] == "failed":
                 self.plugin._check(studio.retry, last["id"])
             elif last and last["state"] == "done":
                 self.plugin._check(studio.manage, "restart", [last["id"]])
             else:
                 self.plugin._check(studio.submit, key)
-        return self.ai_tasks(body)
+        result = self.ai_tasks(body)
+        if source_notice:
+            result["source_notice"] = source_notice + "，已提交本地字幕任务"
+        return result
 
     def ai_cancel(self, body: dict):
         studio = self.plugin._active()

@@ -39,6 +39,9 @@ def migrate(conn, job_directory):
             conn.execute("UPDATE job SET report=? WHERE id=?", (json.dumps(report, ensure_ascii=False), row["id"]))
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS old_task ON job(legacy_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS job_date ON job(hidden,created DESC,id DESC)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS online_manuscript (
+        job INTEGER PRIMARY KEY REFERENCES job(id), source TEXT NOT NULL, contents BLOB NOT NULL
+    )""")
 
 
 def as_utc(stamp):
@@ -150,8 +153,11 @@ def operate(conn, action, ids):
             elif conn.execute("SELECT 1 FROM job WHERE target=? AND state IN ('queued','running')", (row["target"],)).fetchone():
                 reason = "本影片已有任务"
             else:
-                new_ids.append(conn.execute("INSERT INTO job(target,state,origin,rerun_of) VALUES (?,'queued','重新生成',?)",
-                                            (row["target"],i)).lastrowid)
+                new_id = conn.execute("INSERT INTO job(target,state,origin,rerun_of) VALUES (?,'queued','重新生成',?)",
+                                      (row["target"], i)).lastrowid
+                conn.execute("""INSERT INTO online_manuscript(job,source,contents)
+                    SELECT ?,source,contents FROM online_manuscript WHERE job=?""", (new_id, i))
+                new_ids.append(new_id)
         else:
             reason = "任务当前状态不能执行此操作"
         if reason:

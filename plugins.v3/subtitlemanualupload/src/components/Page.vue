@@ -26,6 +26,7 @@ const data = ref({ rows: [], counts: {}, matches: 0, page_size: 50 })
 const query = ref(''), filter = ref(props.compact ? 'recent' : 'all')
 const kind = ref(props.compact ? 'Movie' : 'all'), order = ref('desc'), offset = ref(0)
 const selected = ref([]), pending = ref(null), upload = ref(null), history = ref(null)
+const englishOptions = ref(null), englishIndex = ref(null), aiPending = ref('')
 const loading = ref(false), busy = ref(false), loadError = ref(''), actionError = ref(''), notice = ref('')
 const selectable = computed(() => data.value.rows.filter(row => row.task).map(row => row.task.id))
 const picked = computed(() => data.value.rows.filter(row => row.task && selected.value.includes(row.task.id)))
@@ -123,17 +124,35 @@ function perform(operation) {
 
 function generate(row) {
   if (row.task && (row.task.state !== 'failed' || row.task.legacy)) return request('restart', [row])
+  return submitAi(row)
+}
+
+function submitAi(row, choice) {
   return act(async () => {
-    if (row.task?.state === 'failed') {
-      await call('post', 'retry', { id: row.task.id })
-      notice.value = `任务 #${row.task.id} 已进入队列`
-    } else {
-      const ready = await call('post', 'library_target', { id: row.id })
-      const result = await call('post', 'translate', { target: ready.target })
-      notice.value = `任务 #${result.id} 已进入队列`
+    aiPending.value = row.id
+    try {
+      const source = choice ? { english_choice: choice } : { find_english: true }
+      const result = await call('post', 'ai_submit', { target_ids: [row.id], ...source })
+      if (result.english_options) {
+        englishIndex.value = null
+        englishOptions.value = { row, ...result.english_options }
+        return
+      }
+      englishOptions.value = null
+      const id = result.tasks?.[0]?.id
+      notice.value = result.source_notice || (id ? `任务 #${id} 已进入队列` : '已提交 AI 字幕任务')
+      await load()
+    } finally {
+      aiPending.value = ''
     }
-    await load()
   })
+}
+
+function translateEnglish() {
+  const options = englishOptions.value
+  if (options && englishIndex.value !== null) {
+    return submitAi(options.row, { token: options.token, index: englishIndex.value })
+  }
 }
 
 function refresh() {
@@ -190,7 +209,7 @@ watch(query, () => {
 onMounted(() => {
   load()
   timer = setInterval(() => {
-    if (props.allowRefresh && !document.hidden && !busy.value && !loading.value && !pending.value && !upload.value && !history.value) load()
+    if (props.allowRefresh && !document.hidden && !busy.value && !loading.value && !pending.value && !upload.value && !history.value && !englishOptions.value) load()
   }, props.compact ? 30000 : 7000)
 })
 onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debounce) })
@@ -296,6 +315,7 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
             <VBtn class="quick-action" size="small" variant="tonal" color="primary" :disabled="busy" @click="upload = row">上传</VBtn>
             <VBtn v-if="!row.original" class="quick-action" size="small" variant="tonal" color="primary"
                   :aria-label="aiLabel(row)" :title="compact ? aiLabel(row) : undefined"
+                  :loading="aiPending === row.id"
                   :disabled="busy || !data.configured || !row.available || active(row.task)" @click="generate(row)">{{ compact ? 'AI' : aiLabel(row) }}</VBtn>
             <VBtn v-if="!compact && can('cancel', row)" size="small" variant="text" color="warning" :disabled="busy" @click="request('cancel', [row])">取消</VBtn>
           </div>
@@ -309,6 +329,27 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
     </component>
 
     <MediaDialog v-if="upload" :row="upload" :call="call" @close="upload = null" @changed="load" />
+    <VDialog :model-value="Boolean(englishOptions)" max-width="640" scrollable :persistent="busy"
+             aria-labelledby="hyrule-english" @update:model-value="open => { if (!open) englishOptions = null }">
+      <VCard v-if="englishOptions">
+        <VCardTitle id="hyrule-english">选择英文字幕</VCardTitle>
+        <VCardText>
+          <p class="path">{{ englishOptions.file }}</p>
+          <p>请核对片源版本，再下载并翻译。</p>
+          <p v-if="actionError" class="error-text" role="alert">{{ actionError }}</p>
+          <div role="radiogroup" aria-label="Emby 英文字幕候选">
+            <label v-for="item in englishOptions.candidates" :key="item.index" class="english-option">
+              <input v-model="englishIndex" name="hyrule-english-option" type="radio" :value="item.index" :disabled="busy">
+              <span>{{ item.title }}<small>{{ item.provider }}{{ item.hash_match ? ' · 哈希匹配' : '' }}</small></span>
+            </label>
+          </div>
+        </VCardText>
+        <VCardActions><VSpacer />
+          <VBtn :disabled="busy" @click="englishOptions = null">返回</VBtn>
+          <VBtn color="primary" :disabled="englishIndex === null" :loading="busy" @click="translateEnglish">下载并翻译</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
     <VDialog :model-value="Boolean(pending)" max-width="420" aria-labelledby="hyrule-confirm" @update:model-value="open => { if (!open) pending = null }">
       <VCard v-if="pending">
         <VCardTitle id="hyrule-confirm">{{ actions[pending.action].label }} {{ pending.ids.length }} 条任务？</VCardTitle>
@@ -335,6 +376,14 @@ onBeforeUnmount(() => { ++requestNumber; clearInterval(timer); clearTimeout(debo
 </template>
 
 <style scoped>
+.english-option {
+  display: flex;
+  gap: 10px;
+  align-items: start;
+  padding-block: 8px;
+  overflow-wrap: anywhere;
+}
+.english-option small { display: block; opacity: .72; }
 .records {
   --embedded-chinese-color: #5e35b1;
   --paper: rgb(var(--v-theme-surface, 255, 255, 255));
